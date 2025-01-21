@@ -22,9 +22,8 @@ public:
         } else {
             m_E             = 0;
             m_retracted     = 0;
-            m_restart_extra = 0;
         }
-
+        m_restart_extra = 0;
         m_absolute_E    = 0;
     }
 
@@ -68,6 +67,7 @@ public:
     double retract_restart_extra() const;
     double retract_length_toolchange() const;
     double retract_restart_extra_toolchange() const;
+    double travel_slope() const;
 
     bool   use_firmware_retraction() const;
 

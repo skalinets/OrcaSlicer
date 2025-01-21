@@ -1,8 +1,4 @@
-///|/ Copyright (c) Prusa Research 2016 - 2023 Vojtěch Bubník @bubnikv, Lukáš Hejl @hejllukas, Oleksandra Iushchenko @YuSanka, Lukáš Matěna @lukasmatena
-///|/ Copyright (c) SuperSlicer 2023 Remi Durand @supermerill
-///|/
-///|/ PrusaSlicer is released under the terms of the AGPLv3 or higher
-///|/
+#include <iostream>
 #include <memory.h>
 #include <cstring>
 #include <cfloat>
@@ -45,7 +41,7 @@ PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config) : m_use_
     m_current_extruder = 0;
     // Zero the position of the XYZE axes + the current feed
     memset(m_current_pos, 0, sizeof(float) * 5);
-    m_current_extrusion_role = GCodeExtrusionRole::None;
+    m_current_extrusion_role = ExtrusionRole::erNone;
     // Expect the first command to fill the nozzle (deretract).
     m_retracted = true;
     
@@ -66,6 +62,7 @@ PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config) : m_use_
 		m_max_volumetric_extrusion_rate_slope_positive = float(config.max_volumetric_extrusion_rate_slope.value) * 60.f * 60.f;
     	m_max_volumetric_extrusion_rate_slope_negative = float(config.max_volumetric_extrusion_rate_slope.value) * 60.f * 60.f;
     	m_max_segment_length = float(config.max_volumetric_extrusion_rate_slope_segment_length.value);
+        m_extrusion_rate_smoothing_external_perimeter_only = bool(config.extrusion_rate_smoothing_external_perimeter_only.value);
     }
 
     for (ExtrusionRateSlope &extrusion_rate_slope : m_max_volumetric_extrusion_rate_slopes) {
@@ -74,7 +71,7 @@ PressureEqualizer::PressureEqualizer(const Slic3r::GCodeConfig &config) : m_use_
     }
     
 	// Don't regulate the pressure before and after ironing.
-    for (const GCodeExtrusionRole er : {GCodeExtrusionRole::Ironing}) {
+    for (const ExtrusionRole er : {ExtrusionRole::erIroning}) {
         m_max_volumetric_extrusion_rate_slopes[size_t(er)].negative = 0;
         m_max_volumetric_extrusion_rate_slopes[size_t(er)].positive = 0;
     }
@@ -155,7 +152,7 @@ void PressureEqualizer::process_layer(const std::string &gcode)
 long PressureEqualizer::advance_segment_beyond_small_gap(const long idx_orig)
 {
     // this should only be run on the last extruding line before a gap
-    assert(m_gcode_lines[idx_cur_pos].extruding());
+    assert(m_gcode_lines[idx_orig].extruding());
     double distance_traveled = 0.0;
     // start at beginning of gap, advance till extrusion found or gap too big
     for (auto idx_cur_pos = idx_orig + 1; idx_cur_pos < m_gcode_lines.size(); idx_cur_pos++) {
@@ -260,7 +257,7 @@ bool PressureEqualizer::process_line(const char *line, const char *line_end, GCo
     if (strncmp(line, EXTRUSION_ROLE_TAG.data(), EXTRUSION_ROLE_TAG.length()) == 0) {
         line += EXTRUSION_ROLE_TAG.length();
         int role = atoi(line);
-        m_current_extrusion_role = GCodeExtrusionRole(role);
+        m_current_extrusion_role = ExtrusionRole(role);
 #ifdef PRESSURE_EQUALIZER_DEBUG
         ++line_idx;
 #endif
@@ -486,11 +483,25 @@ void PressureEqualizer::output_gcode_line(const size_t line_idx)
     if (*comment != ';')
         comment = nullptr;
 
-    // Emit the line with lowered extrusion rates.
+    // get the gcode line length
     float l = line.dist_xyz();
-    if (auto nSegments = size_t(ceil(l / m_max_segment_length)); nSegments == 1) { // Just update this segment.
+    // number of segments this line can be broken down to
+    auto nSegments = size_t(ceil(l / m_max_segment_length));
+    
+    // Orca:
+    // Calculate the absolute difference in volumetric extrusion rate between the start and end point of the line.
+    // Quantize it to 1mm3/min (0.016mm3/sec).
+    int delta_volumetric_rate = std::round(fabs(line.volumetric_extrusion_rate_end - line.volumetric_extrusion_rate_start));
+    
+    // Emit the line with lowered extrusion rates.
+    // Orca:
+    // First, check if the change in volumetric extrusion rate is trivial (less than 10mm3/min -> 0.16mm3/sec (5mm/sec speed for a 0.25 mm nozzle).
+    // Or if the line size is equal in length with the smallest segment.
+    // If so, then emit the line as a single extrusion, i.e. dont split into segments.
+    if ( nSegments == 1 || delta_volumetric_rate < 10) {
         push_line_to_output(line_idx, line.feedrate() * line.volumetric_correction_avg(), comment);
-    } else {
+    } else // The line needs to be split the line into segments and apply extrusion rate smoothing
+    {
         bool accelerating = line.volumetric_extrusion_rate_start < line.volumetric_extrusion_rate_end;
         // Update the initial and final feed rate values.
         line.pos_start[4] = line.volumetric_extrusion_rate_start * line.pos_end[4] / line.volumetric_extrusion_rate;
@@ -589,8 +600,7 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
     if (line_idx == fist_line_idx || !m_gcode_lines[line_idx].extruding())
         // Nothing to do, the last move is not extruding.
         return;
-
-    std::array<float, size_t(GCodeExtrusionRole::Count)> feedrate_per_extrusion_role{};
+    std::array<float, size_t(ExtrusionRole::erCount)> feedrate_per_extrusion_role{};
     feedrate_per_extrusion_role.fill(std::numeric_limits<float>::max());
     feedrate_per_extrusion_role[int(m_gcode_lines[line_idx].extrusion_role)] = m_gcode_lines[line_idx].volumetric_extrusion_rate_start;
 
@@ -600,7 +610,7 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
         if (!m_gcode_lines[idx_prev].extruding())
             break;
         // Don't decelerate before ironing.
-        if (m_gcode_lines[line_idx].extrusion_role == GCodeExtrusionRole::Ironing) {            line_idx = idx_prev;
+        if (m_gcode_lines[line_idx].extrusion_role == ExtrusionRole::erIroning) {            line_idx = idx_prev;
             continue;
         }
         // Volumetric extrusion rate at the start of the succeding segment.
@@ -609,10 +619,10 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
         line_idx        = idx_prev;
         GCodeLine &line = m_gcode_lines[line_idx];
 
-        for (size_t iRole = 1; iRole < size_t(GCodeExtrusionRole::Count); ++ iRole) {
+        for (size_t iRole = 1; iRole < size_t(ExtrusionRole::erCount); ++ iRole) {
             const float &rate_slope = m_max_volumetric_extrusion_rate_slopes[iRole].negative;
             if (rate_slope == 0 || feedrate_per_extrusion_role[iRole] == std::numeric_limits<float>::max())
-                continue; // The negative rate is unlimited or the rate for GCodeExtrusionRole iRole is unlimited.
+                continue; // The negative rate is unlimited or the rate for ExtrusionRole iRole is unlimited.
 
             float rate_end = feedrate_per_extrusion_role[iRole];
             if (iRole == size_t(line.extrusion_role) && rate_succ < rate_end)
@@ -620,7 +630,9 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
                 rate_end = rate_succ;
 
             // don't alter the flow rate for these extrusion types
-            if (!line.adjustable_flow || line.extrusion_role == GCodeExtrusionRole::BridgeInfill || line.extrusion_role == GCodeExtrusionRole::Ironing) {
+            // Orca: Limit ERS to external perimeters and overhangs if option selected by user
+            if (!line.adjustable_flow || line.extrusion_role == ExtrusionRole::erBridgeInfill || line.extrusion_role == ExtrusionRole::erIroning ||
+                (m_extrusion_rate_smoothing_external_perimeter_only && line.extrusion_role != ExtrusionRole::erOverhangPerimeter && line.extrusion_role != ExtrusionRole::erExternalPerimeter)) {
                 rate_end = line.volumetric_extrusion_rate_end;
             } else if (line.volumetric_extrusion_rate_end > rate_end) {
                 line.volumetric_extrusion_rate_end = rate_end;
@@ -633,7 +645,7 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
             }
 
             if (line.adjustable_flow) {
-                float rate_start = rate_end + rate_slope * line.time_corrected();
+                float rate_start = sqrt(rate_end * rate_end + 2 * line.volumetric_extrusion_rate * line.dist_xyz() * rate_slope / line.feedrate());
                 if (rate_start < line.volumetric_extrusion_rate_start) {
                     // Limit the volumetric extrusion rate at the start of this segment due to a segment
                     // of ExtrusionType iRole, which will be extruded in the future.
@@ -644,7 +656,7 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
             }
 //            feedrate_per_extrusion_role[iRole] = (iRole == line.extrusion_role) ? line.volumetric_extrusion_rate_start : rate_start;
             // Don't store feed rate for ironing
-            if (line.extrusion_role != GCodeExtrusionRole::Ironing)
+            if (line.extrusion_role != ExtrusionRole::erIroning)
                 feedrate_per_extrusion_role[iRole] = line.volumetric_extrusion_rate_start;
         }
     }
@@ -659,7 +671,7 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
         if (!m_gcode_lines[idx_next].extruding())
             break;
         // Don't accelerate after ironing.
-        if (m_gcode_lines[line_idx].extrusion_role == GCodeExtrusionRole::Ironing) {
+        if (m_gcode_lines[line_idx].extrusion_role == ExtrusionRole::erIroning) {
             line_idx = idx_next;
             continue;
         }
@@ -668,17 +680,20 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
         line_idx = idx_next;
         GCodeLine &line = m_gcode_lines[line_idx];
 
-        for (size_t iRole = 1; iRole < size_t(GCodeExtrusionRole::Count); ++ iRole) {
+        for (size_t iRole = 1; iRole < size_t(ExtrusionRole::erCount); ++ iRole) {
             const float &rate_slope = m_max_volumetric_extrusion_rate_slopes[iRole].positive;
             if (rate_slope == 0 || feedrate_per_extrusion_role[iRole] == std::numeric_limits<float>::max())
-                continue; // The positive rate is unlimited or the rate for GCodeExtrusionRole iRole is unlimited.
+                continue; // The positive rate is unlimited or the rate for ExtrusionRole iRole is unlimited.
 
             float rate_start = feedrate_per_extrusion_role[iRole];
             // don't alter the flow rate for these extrusion types
-            if (!line.adjustable_flow  || line.extrusion_role == GCodeExtrusionRole::BridgeInfill || line.extrusion_role == GCodeExtrusionRole::Ironing) {
+            // Orca: Limit ERS to external perimeters and overhangs if option selected by user
+            if (!line.adjustable_flow || line.extrusion_role == ExtrusionRole::erBridgeInfill || line.extrusion_role == ExtrusionRole::erIroning ||
+                (m_extrusion_rate_smoothing_external_perimeter_only && line.extrusion_role != ExtrusionRole::erOverhangPerimeter && line.extrusion_role != ExtrusionRole::erExternalPerimeter)) {
                 rate_start = line.volumetric_extrusion_rate_start;
             } else if (iRole == size_t(line.extrusion_role) && rate_prec < rate_start)
                 rate_start = rate_prec;
+            
             if (line.volumetric_extrusion_rate_start > rate_start) {
                 line.volumetric_extrusion_rate_start = rate_start;
                 line.max_volumetric_extrusion_rate_slope_positive = rate_slope;
@@ -690,7 +705,7 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
             }
 
             if (line.adjustable_flow) {
-                float rate_end = rate_start + rate_slope * line.time_corrected();
+                float rate_end = sqrt(rate_start * rate_start + 2 * line.volumetric_extrusion_rate * line.dist_xyz() * rate_slope / line.feedrate());
                 if (rate_end < line.volumetric_extrusion_rate_end) {
                     // Limit the volumetric extrusion rate at the start of this segment due to a segment
                     // of ExtrusionType iRole, which was extruded before.
@@ -701,7 +716,7 @@ void PressureEqualizer::adjust_volumetric_rate(const size_t fist_line_idx, const
             }
 //            feedrate_per_extrusion_role[iRole] = (iRole == line.extrusion_role) ? line.volumetric_extrusion_rate_end : rate_end;
             // Don't store feed rate for ironing
-            if (line.extrusion_role != GCodeExtrusionRole::Ironing)
+            if (line.extrusion_role != ExtrusionRole::erIroning)
                 feedrate_per_extrusion_role[iRole] = line.volumetric_extrusion_rate_end;
         }
     }
@@ -769,8 +784,13 @@ inline bool is_just_line_with_extrude_set_speed_tag(const std::string &line)
     return p_line <= line_end && is_eol(*p_line);
 }
 
-void PressureEqualizer::push_line_to_output(const size_t line_idx, const float new_feedrate, const char *comment)
+void PressureEqualizer::push_line_to_output(const size_t line_idx, float new_feedrate, const char *comment)
 {
+    // Orca: sanity check, 1 mm/s is the minimum feedrate.
+    if (new_feedrate < 60)
+        new_feedrate = 60;
+    // Quantize speed changes to a minimum of 1mm/sec, to reduce gcode volume for trivial speed changes.
+    new_feedrate = std::round(new_feedrate / 60.0) * 60.0;
     const GCodeLine &line = m_gcode_lines[line_idx];
     if (line_idx > 0 && output_buffer_length > 0) {
         const std::string prev_line_str = std::string(output_buffer.begin() + int(this->output_buffer_prev_length),
@@ -785,7 +805,7 @@ void PressureEqualizer::push_line_to_output(const size_t line_idx, const float n
     GCodeG1Formatter feedrate_formatter;
     feedrate_formatter.emit_f(new_feedrate);
     feedrate_formatter.emit_string(std::string(EXTRUDE_SET_SPEED_TAG.data(), EXTRUDE_SET_SPEED_TAG.length()));
-    if (line.extrusion_role == GCodeExtrusionRole::ExternalPerimeter)
+    if (line.extrusion_role == ExtrusionRole::erExternalPerimeter)
         feedrate_formatter.emit_string(std::string(EXTERNAL_PERIMETER_TAG.data(), EXTERNAL_PERIMETER_TAG.length()));
     push_to_output(feedrate_formatter);
 

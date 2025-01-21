@@ -2,6 +2,7 @@
 #include "I18N.hpp"
 
 #include "libslic3r/Utils.hpp"
+#include "libslic3r/Color.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"
@@ -99,6 +100,7 @@ void CopyrightsDialog::fill_entries()
         { "GLFW",                                           "",      "https://www.glfw.org" },
         { "GNU gettext",                                    "",      "https://www.gnu.org/software/gettext" },
         { "ImGUI",                                          "",      "https://github.com/ocornut/imgui" },
+        { "ImGuizmo",                                       "",      "https://github.com/CedricGuillemet/ImGuizmo" },
         { "Libigl",                                         "",      "https://libigl.github.io" },
         { "libnest2d",                                      "",      "https://github.com/tamasmeszaros/libnest2d" },
         { "lib_fts",                                        "",      "https://www.forrestthewoods.com" },
@@ -127,10 +129,10 @@ wxString CopyrightsDialog::get_html_text()
     wxColour bgr_clr = wxGetApp().get_window_default_clr();//wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW);
 
     const auto text_clr = wxGetApp().get_label_clr_default();// wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
-    const auto text_clr_str = wxString::Format(wxT("#%02X%02X%02X"), text_clr.Red(), text_clr.Green(), text_clr.Blue());
-    const auto bgr_clr_str = wxString::Format(wxT("#%02X%02X%02X"), bgr_clr.Red(), bgr_clr.Green(), bgr_clr.Blue());
+    const auto text_clr_str = encode_color(ColorRGB(text_clr.Red(), text_clr.Green(), text_clr.Blue()));
+    const auto bgr_clr_str = encode_color(ColorRGB(bgr_clr.Red(), bgr_clr.Green(), bgr_clr.Blue()));
 
-    const wxString copyright_str = _(L("Copyright")) + "&copy; ";
+    const wxString copyright_str = _L("Copyright") + "&copy; ";
 
     wxString text = wxString::Format(
         "<html>"
@@ -149,7 +151,7 @@ wxString CopyrightsDialog::get_html_text()
         _L("License"),
         _L("Orca Slicer is licensed under "),
         "https://www.gnu.org/licenses/agpl-3.0.html",_L("GNU Affero General Public License, version 3"),
-        _L("Orca Slicer is based on BambuStudio by Bambulab, which is from PrusaSlicer by Prusa Research.  PrusaSlicer is from Slic3r by Alessandro Ranellucci and the RepRap community"),
+        _L("Orca Slicer is based on PrusaSlicer and BambuStudio"),
         _L("Libraries"),
         _L("This software uses open source components whose copyright and other proprietary rights belong to their respective owners"));
 
@@ -239,11 +241,18 @@ AboutDialog::AboutDialog()
 
     // version
     {
+
+        auto _build_string_font = Label::Body_10;
+        // _build_string_font.SetStyle(wxFONTSTYLE_ITALIC);
+
         vesizer->Add(0, FromDIP(165), 1, wxEXPAND, FromDIP(5));
-        auto version_string = _L("Orca Slicer ") + " " + std::string(SoftFever_VERSION);
+        auto version_string = _L("Orca Slicer") + " " + std::string(SoftFever_VERSION);
         wxStaticText* version = new wxStaticText(this, wxID_ANY, version_string.c_str(), wxDefaultPosition, wxDefaultSize);
-        wxStaticText* bs_version = new wxStaticText(this, wxID_ANY, wxString::Format("Based on BambuStudio and PrusaSlicer"), wxDefaultPosition, wxDefaultSize);
-        bs_version->SetFont(Label::Body_12);
+        wxStaticText* credits_string = new wxStaticText(this, wxID_ANY,
+                                                        wxString::Format("Build %s.\nOrcaSlicer is based on PrusaSlicer and BambuStudio",
+                                                                         std::string(GIT_COMMIT_HASH)),
+                                                        wxDefaultPosition, wxDefaultSize);
+        credits_string->SetFont(_build_string_font);
         wxFont version_font = GetFont();
         #ifdef __WXMSW__
         version_font.SetPointSize(version_font.GetPointSize()-1);
@@ -253,13 +262,12 @@ AboutDialog::AboutDialog()
         version_font.SetPointSize(FromDIP(16));
         version->SetFont(version_font);
         version->SetForegroundColour(wxColour("#FFFFFD"));
-        bs_version->SetForegroundColour(wxColour("#FFFFFD"));
+        credits_string->SetForegroundColour(wxColour("#FFFFFD"));
         version->SetBackgroundColour(wxColour("#4d4d4d"));
-        bs_version->SetBackgroundColour(wxColour("#4d4d4d"));
-
+        credits_string->SetBackgroundColour(wxColour("#4d4d4d"));
 
         vesizer->Add(version, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, FromDIP(5));
-        vesizer->Add(bs_version, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, FromDIP(5));
+        vesizer->Add(credits_string, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, FromDIP(5));
 // #if BBL_INTERNAL_TESTING
 //         wxString build_time = wxString::Format("Build Time: %s", std::string(SLIC3R_BUILD_TIME));
 //         wxStaticText* build_time_text = new wxStaticText(this, wxID_ANY, build_time, wxDefaultPosition, wxDefaultSize);
@@ -320,7 +328,7 @@ AboutDialog::AboutDialog()
 
     copyright_hor_sizer->Add(copyright_ver_sizer, 0, wxLEFT, FromDIP(20));
 
-    wxStaticText *html_text = new wxStaticText(this, wxID_ANY, "Copyright(C) 2022-2023 Li Jiang All Rights Reserved", wxDefaultPosition, wxDefaultSize);
+    wxStaticText *html_text = new wxStaticText(this, wxID_ANY, "Copyright(C) 2022-2024 Li Jiang All Rights Reserved", wxDefaultPosition, wxDefaultSize);
     html_text->SetForegroundColour(wxColour(107, 107, 107));
 
     copyright_ver_sizer->Add(html_text, 0, wxALL , 0);
@@ -337,7 +345,7 @@ AboutDialog::AboutDialog()
               (boost::format(
               "<html>"
               "<body>"
-              "<p style=\"text-align:left\"><a  href=\"https://github.com/SoftFever/Orcaslicer\">https://github.com/SoftFever/Orcaslicer</ a></p>"
+              "<p style=\"text-align:left\"><a style=\"color:#009789\" href=\"https://github.com/SoftFever/Orcaslicer\">https://github.com/SoftFever/Orcaslicer</ a></p>"
               "</body>"
               "</html>")
             ).str());

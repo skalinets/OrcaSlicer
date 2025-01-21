@@ -5,6 +5,7 @@
 	margin: 0px;
     font-family: "system-ui", "Segoe UI", Roboto, Oxygen, Ubuntu, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-sans;
 	border-color: #D7D7D7;
+	user-select: none;
 }
 
 html, body {
@@ -202,12 +203,12 @@ body
 
 .BtnItem:hover
 {
-	background-color: #E0FCEB;
+	background-color: #BFE1DE; /*ORCA color with %25 opacity*/
 }
 
 .BtnItemSelected
 {
-	background-color: #e0fcf3;
+	background-color: #BFE1DE; /*ORCA color with %25 opacity*/
 }
 
 .BtnIcon
@@ -276,8 +277,8 @@ body
 
 .MenuItem:hover
 {
-	border-color: #4db6ac;
-	background-color: #E0FCEB;
+	border-color: #009688;		/*ORCA color*/
+	background-color: #E5F0EE; /*ORCA color with %25 opacity*/
 }
 
 .MenuIcon
@@ -421,6 +422,7 @@ body
 	height: 184px;
 	border-radius: 8px;
 	display: inline-block;
+	object-fit: cover;
 }
 
 .FileName
@@ -463,7 +465,7 @@ body
 .CT_Item:hover
 {
 	cursor: pointer;
-	background-color: #0078D4;
+	background-color:#009688; /*ORCA color*/
 	border-radius: 4px;
 	color: #fff;
 }
@@ -699,7 +701,7 @@ body
 #HotModel_RIGHT_Title:hover
 {
 	cursor: pointer;	
-	color:#00AE42;	
+	color:#009688;	
 }
 
 .HotModelPiece

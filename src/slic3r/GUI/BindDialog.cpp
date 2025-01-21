@@ -5,6 +5,7 @@
 #include <wx/sizer.h>
 #include <wx/statbox.h>
 #include "wx/evtloop.h"
+#include <wx/mstream.h>
 #include <wx/tokenzr.h>
 #include <wx/richmsgdlg.h>
 #include <wx/richtext/richtextctrl.h>
@@ -13,6 +14,8 @@
 #include "MainFrame.hpp"
 #include "GUI_App.hpp"
 #include "Plater.hpp"
+#include "Jobs/BoostThreadWorker.hpp"
+#include "Jobs/PlaterWorker.hpp"
 #include "Widgets/WebView.hpp"
 
 namespace Slic3r {
@@ -51,6 +54,300 @@ wxString get_fail_reason(int code)
         return _L("Unknown Failure");
 }
 
+PingCodeBindDialog::PingCodeBindDialog(Plater* plater /*= nullptr*/)
+    : DPIDialog(static_cast<wxWindow*>(wxGetApp().mainframe), wxID_ANY, _L("Bind with Pin Code"), wxDefaultPosition, wxDefaultSize, wxCAPTION | wxCLOSE_BOX)
+{
+#ifdef __WINDOWS__
+    SetDoubleBuffered(true);
+#endif //__WINDOWS__
+    wxBoxSizer* sizer_main = new wxBoxSizer(wxVERTICAL);
+
+ 
+    std::string icon_path = (boost::format("%1%/images/OrcaSlicerTitle.ico") % resources_dir()).str();
+    SetIcon(wxIcon(encode_path(icon_path.c_str()), wxBITMAP_TYPE_ICO));
+
+    SetBackgroundColour(*wxWHITE);
+    wxBoxSizer* m_sizer_main = new wxBoxSizer(wxVERTICAL);
+    auto m_line_top = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(-1, 1), wxTAB_TRAVERSAL);
+    m_line_top->SetBackgroundColour(wxColour(166, 169, 170));
+    
+
+    m_simplebook = new wxSimplebook(this);
+    m_simplebook->SetSize(wxSize(FromDIP(460), FromDIP(240)));
+    m_simplebook->SetMinSize(wxSize(FromDIP(460), FromDIP(240)));
+    m_simplebook->SetMaxSize(wxSize(FromDIP(460), FromDIP(240)));
+
+
+    request_bind_panel = new wxPanel(m_simplebook);
+    binding_panel = new wxPanel(m_simplebook);
+
+    request_bind_panel->SetSize(wxSize(FromDIP(460), FromDIP(240)));
+    request_bind_panel->SetMinSize(wxSize(FromDIP(460), FromDIP(240)));
+    request_bind_panel->SetMaxSize(wxSize(FromDIP(460), FromDIP(240)));
+
+    binding_panel->SetSize(wxSize(FromDIP(460), FromDIP(240)));
+    binding_panel->SetMinSize(wxSize(FromDIP(460), FromDIP(240)));
+    binding_panel->SetMaxSize(wxSize(FromDIP(460), FromDIP(240)));
+
+
+    request_bind_panel->SetBackgroundColour(*wxWHITE);
+    binding_panel->SetBackgroundColour(*wxWHITE);
+
+    m_status_text = new Label(request_bind_panel, _L("Please Find the Pin Code in Account page on printer screen,\n and type in the Pin Code below."));
+    m_status_text->SetBackgroundColour(*wxWHITE);
+    m_status_text->SetFont(Label::Body_14);
+    m_status_text->SetMaxSize(wxSize(FromDIP(440), -1));
+    m_status_text->Wrap(FromDIP(440));
+    m_status_text->SetForegroundColour(wxColour(38, 46, 48));
+
+    m_link_show_ping_code_wiki = new wxStaticText(request_bind_panel, wxID_ANY, _L("Can't find Pin Code?"));
+    m_link_show_ping_code_wiki->SetFont(Label::Body_14);
+    m_link_show_ping_code_wiki->SetBackgroundColour(*wxWHITE);
+    m_link_show_ping_code_wiki->SetForegroundColour(wxColour(31, 142, 234));
+
+    m_link_show_ping_code_wiki->Bind(wxEVT_ENTER_WINDOW, [this](auto& e) {SetCursor(wxCURSOR_HAND); });
+    m_link_show_ping_code_wiki->Bind(wxEVT_LEAVE_WINDOW, [this](auto& e) {SetCursor(wxCURSOR_ARROW); });
+
+    m_link_show_ping_code_wiki->Bind(wxEVT_LEFT_DOWN, [this](auto& e) {
+        m_ping_code_wiki = "https://wiki.bambulab.com/en/bambu-studio/manual/pin-code";
+        wxLaunchDefaultBrowser(m_ping_code_wiki);
+    });
+
+    m_text_input_title = new wxStaticText(request_bind_panel, wxID_ANY, _L("Pin Code"));
+    m_text_input_title->SetFont(Label::Body_14);
+    m_text_input_title->SetBackgroundColour(*wxWHITE);
+
+    wxBoxSizer* ping_code_input = new wxBoxSizer(wxHORIZONTAL);
+
+
+    for (int i = 0; i < PING_CODE_LENGTH; i++) {
+        m_text_input_single_code[i] = new TextInput(request_bind_panel, wxEmptyString, "", "", wxDefaultPosition, wxSize(FromDIP(38), FromDIP(38)), wxTE_PROCESS_ENTER | wxTE_CENTER);
+        wxTextAttr textAttr;
+        textAttr.SetAlignment(wxTEXT_ALIGNMENT_CENTER); 
+        textAttr.SetTextColour(wxColour(34, 139, 34));
+        m_text_input_single_code[i]->GetTextCtrl()->SetDefaultStyle(textAttr);
+        m_text_input_single_code[i]->SetFont(Label::Body_16);
+        m_text_input_single_code[i]->GetTextCtrl()->SetMaxLength(1);
+        m_text_input_single_code[i]->GetTextCtrl()->Bind(wxEVT_TEXT, &PingCodeBindDialog::on_text_changed, this);
+        m_text_input_single_code[i]->GetTextCtrl()->Bind(wxEVT_KEY_DOWN, &PingCodeBindDialog::on_key_backspace, this);
+        m_text_input_single_code[i]->GetTextCtrl()->Bind(wxEVT_CHAR, &PingCodeBindDialog::on_key_input, this);
+        ping_code_input->Add(m_text_input_single_code[i], 0, wxALL, FromDIP(5));
+    }
+
+    wxBoxSizer* m_sizer_button = new wxBoxSizer(wxHORIZONTAL);
+    m_sizer_button->Add(0, 0, 1, wxEXPAND, 5);
+    m_button_bind = new Button(request_bind_panel, _L("Confirm"));
+
+    StateColor btn_bg_green(std::pair<wxColour, int>(wxColour(206, 206, 206), StateColor::Disabled),
+        std::pair<wxColour, int>(wxColour(0, 137, 123), StateColor::Pressed),
+        std::pair<wxColour, int>(wxColour(38, 166, 154), StateColor::Hovered),
+        std::pair<wxColour, int>(wxColour(0, 150, 136), StateColor::Normal));
+    m_button_bind->SetBackgroundColor(btn_bg_green);
+    m_button_bind->SetBorderColor(*wxWHITE);
+    m_button_bind->SetTextColor(wxColour("#FFFFFE"));
+    m_button_bind->SetSize(BIND_DIALOG_BUTTON_SIZE);
+    m_button_bind->SetMinSize(BIND_DIALOG_BUTTON_SIZE);
+    m_button_bind->SetCornerRadius(FromDIP(12));
+    m_button_bind->Enable(false);
+
+    StateColor btn_bg_white(std::pair<wxColour, int>(wxColour(206, 206, 206), StateColor::Hovered),
+        std::pair<wxColour, int>(*wxWHITE, StateColor::Normal));
+
+    m_button_cancel = new Button(request_bind_panel, _L("Cancel"));
+    m_button_cancel->SetBackgroundColor(btn_bg_white);
+    m_button_cancel->SetBorderColor(BIND_DIALOG_GREY900);
+    m_button_cancel->SetSize(BIND_DIALOG_BUTTON_SIZE);
+    m_button_cancel->SetMinSize(BIND_DIALOG_BUTTON_SIZE);
+    m_button_cancel->SetTextColor(BIND_DIALOG_GREY900);
+    m_button_cancel->SetCornerRadius(FromDIP(12));
+
+    m_sizer_button->Add(m_button_bind, 0, wxALIGN_CENTER, 0);
+    m_sizer_button->Add(0, 0, 0, wxLEFT, FromDIP(13));
+    m_sizer_button->Add(m_button_cancel, 0, wxALIGN_CENTER, 0);
+
+
+
+    m_simplebook->AddPage(request_bind_panel, wxEmptyString, true);
+    m_simplebook->AddPage(binding_panel, wxEmptyString, false);
+
+
+    auto sizer_request = new wxBoxSizer(wxVERTICAL);
+    sizer_request->Add(0, 0, 0, wxTOP, FromDIP(10));
+    sizer_request->Add(m_status_text, 0, wxLEFT, FromDIP(13));
+    sizer_request->Add(0, 0, 0, wxTOP, FromDIP(10));
+    sizer_request->Add(m_link_show_ping_code_wiki, 0, wxLEFT, FromDIP(13));
+    sizer_request->Add(0, 0, 0, wxTOP, FromDIP(15));
+    sizer_request->Add(m_text_input_title, 0, wxLEFT, FromDIP(13));
+    sizer_request->Add(0, 0, 0, wxTOP, FromDIP(5));
+    sizer_request->Add(ping_code_input, 0, wxLEFT, FromDIP(10));
+    sizer_request->Add(0, 0, 0, wxTOP, FromDIP(10));
+    sizer_request->Add(m_sizer_button, 0, wxALIGN_RIGHT | wxRIGHT | wxBOTTOM, FromDIP(15));
+    request_bind_panel->SetSizer(sizer_request);
+    request_bind_panel->Layout();
+    request_bind_panel->Fit();
+
+
+
+    auto m_loading_txt = new Label(binding_panel, _L("Binding..."));
+    m_loading_txt->SetBackgroundColour(*wxWHITE);
+    m_loading_txt->SetFont(Label::Head_16);
+    auto m_loading_tip_txt = new Label(binding_panel, _L("Please confirm on the printer screen"));
+    m_loading_tip_txt->SetBackgroundColour(*wxWHITE);
+    m_loading_tip_txt->SetFont(Label::Body_15);
+
+    wxBoxSizer* m_sizer_binding_button = new wxBoxSizer(wxHORIZONTAL);
+    m_sizer_binding_button->Add(0, 0, 1, wxEXPAND, 5);
+
+    m_button_close = new Button(binding_panel, _L("Close"));
+    m_button_close->SetBackgroundColor(btn_bg_white);
+    m_button_close->SetBorderColor(BIND_DIALOG_GREY900);
+    m_button_close->SetSize(BIND_DIALOG_BUTTON_SIZE);
+    m_button_close->SetMinSize(BIND_DIALOG_BUTTON_SIZE);
+    m_button_close->SetTextColor(BIND_DIALOG_GREY900);
+    m_button_close->SetCornerRadius(FromDIP(12));
+    m_sizer_binding_button->Add(m_button_close, 0, wxALIGN_CENTER, 0);
+
+    auto sizer_binding = new wxBoxSizer(wxVERTICAL);
+    sizer_binding->Add(0, 0, 0, wxTOP, FromDIP(80));
+    sizer_binding->Add(m_loading_txt, 0, wxALIGN_CENTER, 0);
+    sizer_binding->Add(0, 0, 0, wxTOP, FromDIP(10));
+    sizer_binding->Add(m_loading_tip_txt, 0, wxALIGN_CENTER, 0);
+    sizer_binding->Add(0, 0, 0, wxTOP, FromDIP(30));
+    sizer_binding->Add(m_sizer_binding_button, 0, wxALIGN_RIGHT | wxRIGHT, FromDIP(20));
+    binding_panel->SetSizer(sizer_binding);
+    binding_panel->Layout();
+    binding_panel->Fit();
+
+
+
+    sizer_main->Add(m_line_top, 0, wxEXPAND, 0);
+    sizer_main->Add(m_simplebook, 0, wxEXPAND, 0);
+
+
+
+    SetSizer(sizer_main);
+    Layout();
+    Fit();
+
+    m_button_bind->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(PingCodeBindDialog::on_bind_printer), NULL, this);
+    m_button_cancel->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(PingCodeBindDialog::on_cancel), NULL, this);
+    m_button_close->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(PingCodeBindDialog::on_cancel), NULL, this);
+
+    m_simplebook->SetSelection(0);
+}
+
+void PingCodeBindDialog::on_key_input(wxKeyEvent& evt)
+{
+    int keyCode = evt.GetKeyCode();
+
+    if (keyCode == WXK_BACK  || (keyCode >= '0' && keyCode <= '9') || (keyCode >= 'a' && keyCode <= 'z') || (keyCode >= 'A' && keyCode <= 'Z'))
+    {
+        evt.Skip(); 
+    }
+    else
+    {
+        wxBell(); 
+        return;
+    }
+}
+
+void PingCodeBindDialog::on_text_changed(wxCommandEvent& event) {
+    //switch focus to the text text input
+    wxTextCtrl* text_input = static_cast<wxTextCtrl*>(event.GetEventObject());
+    int idx = -1;
+    for (int i = 0; i < PING_CODE_LENGTH; i++) {
+        if (text_input == m_text_input_single_code[i]->GetTextCtrl()) {
+            idx = i;
+            break;
+        }
+    }
+
+    if (idx != -1 && text_input->GetValue().Length() == 1) {
+        if (idx < PING_CODE_LENGTH-1) {
+            m_text_input_single_code[idx + 1]->SetFocus(); 
+        }
+
+        auto has_empty = false;
+        for (int i = 0; i < PING_CODE_LENGTH; i++) {
+            if (m_text_input_single_code[i]->GetTextCtrl()->GetValue().ToStdString().empty()) {
+                has_empty = true;
+            }
+        }
+
+        if (has_empty) {
+            m_button_bind->Enable(false);
+        }
+        else {
+            m_button_bind->Enable(true);
+        }
+
+        /*if (idx == PING_CODE_LENGTH - 1) {
+            m_button_bind->Enable(true);
+        }*/
+    }
+
+}
+
+void PingCodeBindDialog::on_key_backspace(wxKeyEvent& event)
+{
+    wxTextCtrl* text_input = static_cast<wxTextCtrl*>(event.GetEventObject());
+    int idx = -1;
+    for (int i = 0; i < 6; i++) {
+        if (text_input == m_text_input_single_code[i]->GetTextCtrl()) {
+            idx = i;
+            break;
+        }
+    }
+    
+    if (event.GetKeyCode() == WXK_BACK && idx >= 0) {
+        CallAfter([this, idx]() {
+            m_text_input_single_code[idx - 1]->SetFocus();
+            m_button_bind->Enable(false);
+        });
+    }
+    event.Skip();
+}
+
+void PingCodeBindDialog::on_bind_printer(wxCommandEvent& event) 
+{
+    wxString ping_code;
+
+    for (int i = 0; i < PING_CODE_LENGTH; i++) {
+        ping_code += m_text_input_single_code[i]->GetTextCtrl()->GetValue().ToStdString();
+    }
+
+    NetworkAgent* agent = wxGetApp().getAgent();
+    if (agent && agent->is_user_login() && ping_code.length() == PING_CODE_LENGTH) {
+        auto result = agent->ping_bind(ping_code.ToStdString());
+
+        if(result < 0){
+            MessageDialog msg_wingow(nullptr, _L("Log in failed. Please check the Pin Code."), "", wxAPPLY | wxOK);
+            msg_wingow.ShowModal();
+            return;
+        }
+        m_simplebook->SetSelection(1);
+    }
+}
+
+void PingCodeBindDialog::on_cancel(wxCommandEvent& event) 
+{
+    EndModal(wxCLOSE);
+}
+
+void PingCodeBindDialog::on_dpi_changed(const wxRect& suggested_rect)
+{
+
+    Fit();
+    Refresh();
+}
+
+
+PingCodeBindDialog::~PingCodeBindDialog() {
+    m_button_bind->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(PingCodeBindDialog::on_bind_printer), NULL, this);
+    m_button_cancel->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(PingCodeBindDialog::on_cancel), NULL, this);
+    m_button_close->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(PingCodeBindDialog::on_cancel), NULL, this);
+}
+
  BindMachineDialog::BindMachineDialog(Plater *plater /*= nullptr*/)
      : DPIDialog(static_cast<wxWindow *>(wxGetApp().mainframe), wxID_ANY, _L("Log in printer"), wxDefaultPosition, wxDefaultSize, wxCAPTION)
  {
@@ -58,6 +355,8 @@ wxString get_fail_reason(int code)
 #ifdef __WINDOWS__
      SetDoubleBuffered(true);
 #endif //__WINDOWS__
+
+     m_tocken.reset(new int(0));
 
      std::string icon_path = (boost::format("%1%/images/OrcaSlicerTitle.ico") % resources_dir()).str();
      SetIcon(wxIcon(encode_path(icon_path.c_str()), wxBITMAP_TYPE_ICO));
@@ -185,7 +484,7 @@ wxString get_fail_reason(int code)
      m_link_Terms_title->Wrap(FromDIP(450));
      m_link_Terms_title->SetForegroundColour(wxColour(0x009688));
      m_link_Terms_title->Bind(wxEVT_LEFT_DOWN, [this](auto& e) {
-         wxString txt = _L("Thank you for purchasing a Bambu Lab device.Before using your Bambu Lab device, please read the termsand conditions.By clicking to agree to use your Bambu Lab device, you agree to abide by the Privacy Policyand Terms of Use(collectively, the \"Terms\"). If you do not comply with or agree to the Bambu Lab Privacy Policy, please do not use Bambu Lab equipment and services.");
+         wxString txt = _L("Thank you for purchasing a Bambu Lab device.Before using your Bambu Lab device, please read the terms and conditions.By clicking to agree to use your Bambu Lab device, you agree to abide by the Privacy Policy and Terms of Use(collectively, the \"Terms\"). If you do not comply with or agree to the Bambu Lab Privacy Policy, please do not use Bambu Lab equipment and services.");
          ConfirmBeforeSendDialog confirm_dlg(this, wxID_ANY, _L("Terms and Conditions"), ConfirmBeforeSendDialog::ButtonStyle::ONLY_CONFIRM);
          confirm_dlg.update_text(txt);
          confirm_dlg.CenterOnParent();
@@ -296,8 +595,7 @@ wxString get_fail_reason(int code)
      wxBoxSizer* m_sizer_bind_failed_info = new wxBoxSizer(wxVERTICAL);
      m_sw_bind_failed_info->SetSizer( m_sizer_bind_failed_info );
 
-     m_link_network_state = new Label(m_sw_bind_failed_info, _L("Check the status of current system services"));
-     m_link_network_state->SetForegroundColour(0x009688);
+     m_link_network_state = new wxHyperlinkCtrl(m_sw_bind_failed_info, wxID_ANY,_L("Check the status of current system services"),"");
      m_link_network_state->SetFont(::Label::Body_12);
      m_link_network_state->Bind(wxEVT_LEFT_DOWN, [this](auto& e) {wxGetApp().link_to_network_check(); });
      m_link_network_state->Bind(wxEVT_ENTER_WINDOW, [this](auto& e) {m_link_network_state->SetCursor(wxCURSOR_HAND); });
@@ -373,6 +671,8 @@ wxString get_fail_reason(int code)
 
      m_status_bar = std::make_shared<BBLStatusBarBind>(m_simplebook);
 
+     m_worker = std::make_unique<PlaterWorker<BoostThreadWorker>>(this, m_status_bar, "bind_worker");
+
      auto        button_panel   = new wxPanel(m_simplebook, wxID_ANY, wxDefaultPosition, BIND_DIALOG_BUTTON_PANEL_SIZE);
      button_panel->SetBackgroundColour(*wxWHITE);
      wxBoxSizer *m_sizer_button = new wxBoxSizer(wxHORIZONTAL);
@@ -433,26 +733,6 @@ wxString get_fail_reason(int code)
 
      Bind(wxEVT_SHOW, &BindMachineDialog::on_show, this);
      Bind(wxEVT_CLOSE_WINDOW, &BindMachineDialog::on_close, this);
-     Bind(wxEVT_WEBREQUEST_STATE, [this](wxWebRequestEvent& evt) {
-         switch (evt.GetState()) {
-             // Request completed
-         case wxWebRequest::State_Completed: {
-             wxImage avatar_stream = *evt.GetResponse().GetStream();
-             if (avatar_stream.IsOk()) {
-                 avatar_stream.Rescale(FromDIP(60), FromDIP(60));
-                 auto bitmap = new wxBitmap(avatar_stream);
-                 //bitmap->SetSize(wxSize(FromDIP(60), FromDIP(60)));
-                 m_avatar->SetBitmap(*bitmap);
-                 Layout();
-             }
-             break;
-         }
-                                           // Request failed
-         case wxWebRequest::State_Failed: {
-             break;
-         }
-         }
-         });
 
      m_button_bind->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(BindMachineDialog::on_bind_printer), NULL, this);
      m_button_cancel->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(BindMachineDialog::on_cancel), NULL, this);
@@ -532,14 +812,7 @@ wxString get_fail_reason(int code)
 
  void BindMachineDialog::on_destroy()
  {
-     if (m_bind_job) {
-         m_bind_job->cancel();
-         m_bind_job->join();
-     }
-
-     if (web_request.IsOk()) {
-         web_request.Cancel();
-     }
+     m_worker.get()->cancel_all();
  }
 
  void BindMachineDialog::on_close(wxCloseEvent &event)
@@ -595,9 +868,9 @@ wxString get_fail_reason(int code)
          agent->track_update_property("dev_ota_version", m_machine_info->get_ota_version());
 
      m_simplebook->SetSelection(0);
-     m_bind_job = std::make_shared<BindJob>(m_status_bar, wxGetApp().plater(), m_machine_info->dev_id, m_machine_info->dev_ip, m_machine_info->bind_sec_link);
+     auto m_bind_job = std::make_unique<BindJob>(m_machine_info->dev_id, m_machine_info->dev_ip, m_machine_info->bind_sec_link, m_machine_info->bind_ssdp_version);
 
-     if (m_machine_info && (m_machine_info->printer_type == "BL-P001" || m_machine_info->printer_type == "BL-P002")) {
+     if (m_machine_info && (m_machine_info->get_printer_series() == PrinterSeries::SERIES_X1)) {
          m_bind_job->set_improved(false);
      }
      else {
@@ -605,7 +878,7 @@ wxString get_fail_reason(int code)
      }
 
      m_bind_job->set_event_handle(this);
-     m_bind_job->start();
+     replace_job(*m_worker, std::move(m_bind_job));
  }
 
 void BindMachineDialog::on_dpi_changed(const wxRect &suggested_rect)
@@ -617,7 +890,7 @@ void BindMachineDialog::on_dpi_changed(const wxRect &suggested_rect)
 void BindMachineDialog::update_machine_info(MachineObject* info)
 {
     m_machine_info = info;
-    if (m_machine_info && (m_machine_info->printer_type == "BL-P001" || m_machine_info->printer_type == "BL-P002")) {
+    if (m_machine_info && (m_machine_info->get_printer_series() == PrinterSeries::SERIES_X1)) {
         m_button_bind->Enable(true);
         m_panel_agreement->Hide();
     }
@@ -650,14 +923,30 @@ void BindMachineDialog::on_show(wxShowEvent &event)
         if (wxGetApp().is_user_login()) {
             wxString username_text = from_u8(wxGetApp().getAgent()->get_user_nickanme());
             m_user_name->SetLabelText(username_text);
-            web_request = wxWebSession::GetDefault().CreateRequest(this, wxGetApp().getAgent()->get_user_avatar());
-            if (!web_request.IsOk()) {
-                // todo request fail
-            }
-            // Start the request
-            web_request.Start();
-        }
 
+            std::string avatar_url = wxGetApp().getAgent()->get_user_avatar();
+            Slic3r::Http http = Slic3r::Http::get(avatar_url);
+            std::string  suffix = avatar_url.substr(avatar_url.find_last_of(".") + 1);
+            http.header("accept", "image/" + suffix)
+                .on_complete([this, time = std::weak_ptr<int>(m_tocken)](std::string body, unsigned int status) {
+                if (time.expired()) return;
+                wxMemoryInputStream stream(body.data(), body.size());
+                wxImage             avatar_image;
+                if (avatar_image.LoadFile(stream, wxBITMAP_TYPE_ANY)) {
+                    if (avatar_image.IsOk() && m_avatar) {
+                        avatar_image.Rescale(this->FromDIP(60), this->FromDIP(60));
+                        CallAfter([this, avatar_image]() {
+                            auto bitmap = new wxBitmap(avatar_image);
+                            m_avatar->SetBitmap(*bitmap);
+                            Layout();
+                            });
+                    }
+                }
+                    })
+                .on_error([this](std::string body, std::string error, unsigned status) {
+                        //BOOST_LOG_TRIVIAL(info) << "load oss picture failed, oss path: " << oss_path << " status:" << status << " error:" << error;
+            }).perform();
+        }
         Layout();
         event.Skip();
     }
@@ -667,7 +956,8 @@ void BindMachineDialog::on_show(wxShowEvent &event)
 UnBindMachineDialog::UnBindMachineDialog(Plater *plater /*= nullptr*/)
      : DPIDialog(static_cast<wxWindow *>(wxGetApp().mainframe), wxID_ANY, _L("Log out printer"), wxDefaultPosition, wxDefaultSize, wxCAPTION)
  {
-     std::string icon_path = (boost::format("%1%/images/OrcaSlicerTitle.ico") % resources_dir()).str();
+    m_tocken.reset(new int(0));
+std::string icon_path = (boost::format("%1%/images/OrcaSlicerTitle.ico") % resources_dir()).str();
      SetIcon(wxIcon(encode_path(icon_path.c_str()), wxBITMAP_TYPE_ICO));
 
      SetBackgroundColour(*wxWHITE);
@@ -779,33 +1069,12 @@ UnBindMachineDialog::UnBindMachineDialog(Plater *plater /*= nullptr*/)
      m_button_unbind->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(UnBindMachineDialog::on_unbind_printer), NULL, this);
      m_button_cancel->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(UnBindMachineDialog::on_cancel), NULL, this);
 
-     Bind(wxEVT_WEBREQUEST_STATE, [this](wxWebRequestEvent& evt) {
-         switch (evt.GetState()) {
-             // Request completed
-         case wxWebRequest::State_Completed: {
-             wxImage avatar_stream = *evt.GetResponse().GetStream();
-             if (avatar_stream.IsOk()) {
-                 avatar_stream.Rescale(FromDIP(60), FromDIP(60));
-                 auto bitmap = new wxBitmap(avatar_stream);
-                 //bitmap->SetSize(wxSize(FromDIP(60), FromDIP(60)));
-                 m_avatar->SetBitmap(*bitmap);
-                 Layout();
-             }
-             break;
-         }
-                                           // Request failed
-         case wxWebRequest::State_Failed: {
-             break;
-         }
-         }
-     });
 
      wxGetApp().UpdateDlgDarkUI(this);
  }
 
  UnBindMachineDialog::~UnBindMachineDialog()
  {
-     web_request.Cancel();
      m_button_unbind->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(UnBindMachineDialog::on_unbind_printer), NULL, this);
      m_button_cancel->Disconnect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(UnBindMachineDialog::on_cancel), NULL, this);
  }
@@ -874,12 +1143,30 @@ void UnBindMachineDialog::on_show(wxShowEvent &event)
         if (wxGetApp().is_user_login()) {
             wxString username_text = from_u8(wxGetApp().getAgent()->get_user_name());
             m_user_name->SetLabelText(username_text);
-            wxString avatar_url = wxGetApp().getAgent()->get_user_avatar();
-            web_request = wxWebSession::GetDefault().CreateRequest(this, avatar_url);
-            if (!web_request.IsOk()) {
-                // todo request fail
-            }
-            web_request.Start();
+            
+            std::string avatar_url = wxGetApp().getAgent()->get_user_avatar();
+            Slic3r::Http http = Slic3r::Http::get(avatar_url);
+            std::string  suffix = avatar_url.substr(avatar_url.find_last_of(".") + 1);
+            http.header("accept", "image/" + suffix)
+                .on_complete([this, time = std::weak_ptr<int>(m_tocken)](std::string body, unsigned int status) {
+                if (time.expired()) return;
+                wxMemoryInputStream stream(body.data(), body.size());
+                wxImage             avatar_image;
+                if (avatar_image.LoadFile(stream, wxBITMAP_TYPE_ANY)) {
+                    if (avatar_image.IsOk() && m_avatar) {
+                        avatar_image.Rescale(this->FromDIP(60), this->FromDIP(60));
+                        CallAfter([this, avatar_image]() {
+                            auto bitmap = new wxBitmap(avatar_image);
+                            m_avatar->SetBitmap(*bitmap);
+                            Layout();
+                            });
+                    }
+                }
+                    })
+                .on_error([this](std::string body, std::string error, unsigned status) {
+                        //BOOST_LOG_TRIVIAL(info) << "load oss picture failed, oss path: " << oss_path << " status:" << status << " error:" << error;
+                }).perform();
+
         }
 
         Layout();

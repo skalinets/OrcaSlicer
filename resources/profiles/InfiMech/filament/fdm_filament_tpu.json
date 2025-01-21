@@ -4,6 +4,9 @@
     "from": "system",
     "instantiation": "false",
     "inherits": "fdm_filament_common",
+    "filament_vendor": [
+        "InfiMech"
+    ],
     "cool_plate_temp" : [
         "30"
     ],
@@ -43,11 +46,9 @@
     "filament_cost": [
         "20"
     ],
-    "filament_retraction_length": [
-        "0.4"
-    ],
+
     "nozzle_temperature_initial_layer": [
-        "210"
+        "230"
     ],
     "reduce_fan_stop_start_freq": [
         "1"
@@ -65,13 +66,13 @@
         "100"
     ],
     "additional_cooling_fan_speed": [
-        "70"
+        "100"
     ],
     "close_fan_the_first_x_layers": [
         "1"
     ],
     "nozzle_temperature": [
-        "210"
+        "230"
     ],
     "temperature_vitrification": [
         "60"
@@ -81,6 +82,15 @@
     ],
     "nozzle_temperature_range_high": [
         "250"
+    ],
+    "filament_z_hop": [
+        "0"
+    ],
+    "slow_down_layer_time": [
+        "10"
+    ],
+    "overhang_fan_threshold": [
+        "95%"
     ],
     "filament_start_gcode": [
         "; filament start gcode\n"

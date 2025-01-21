@@ -22,7 +22,6 @@
 #include <pwd.h>
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
-#include <boost/filesystem/convenience.hpp>
 #include <boost/process.hpp>
 #endif
 
@@ -202,7 +201,7 @@ namespace search_for_drives_internal
 				stat(path.c_str(), &buf);
 				uid_t uid = buf.st_uid;
 				if (getuid() == uid)
-					out.emplace_back(DriveData{ boost::filesystem::basename(boost::filesystem::path(path)), path });
+					out.emplace_back(DriveData{ boost::filesystem::path(path).stem().string(), path });
 			}
 		}
 	}
@@ -370,12 +369,13 @@ std::string RemovableDriveManager::get_removable_drive_path(const std::string &p
 
 std::string RemovableDriveManager::get_removable_drive_from_path(const std::string& path)
 {
-	std::size_t found = path.find_last_of("/");
-	std::string new_path = found == path.size() - 1 ? path.substr(0, found) : path;
-    // trim the filename
-    found = new_path.find_last_of("/");
-    new_path = new_path.substr(0, found);
-    
+	std::string new_path(path);
+	if (!boost::filesystem::is_directory(path)) {
+		std::size_t found = path.find_last_of("/");
+		if (found != std::string::npos)
+			new_path.erase(found);
+	}
+
 	// check if same filesystem
 	std::scoped_lock<std::mutex> lock(m_drives_mutex);
 	for (const DriveData &drive_data : m_current_drives)

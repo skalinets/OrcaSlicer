@@ -3,6 +3,7 @@
 
 #include "../wxExtensions.hpp"
 #include <wx/textctrl.h>
+#include <wx/stattext.h>
 #include "StaticBox.hpp"
 
 wxDECLARE_EVENT(wxCUSTOMEVT_SET_TEMP_FINISH, wxCommandEvent);
@@ -88,7 +89,7 @@ public:
 
     wxString GetTagTemp() { return text_ctrl->GetValue(); }
     wxString GetCurrTemp() { return GetLabel(); }
-
+    int get_max_temp() { return max_temp; }
     void SetLabel(const wxString &label);
 
     void SetTextColor(StateColor const &color);
