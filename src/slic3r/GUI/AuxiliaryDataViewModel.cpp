@@ -3,6 +3,11 @@
 #include "libslic3r/Model.hpp"
 #include "libslic3r/Format/bbs_3mf.hpp"
 
+
+#include <boost/log/trivial.hpp>
+
+#include <wx/log.h>
+
 const static std::array<wxString, 4> s_default_folders = {
     _L("Model Pictures"),
     _L("Bill of Materials"),
@@ -332,7 +337,7 @@ wxDataViewItemArray AuxiliaryModel::ImportFile(AuxiliaryModelNode* sel, wxArrayS
         dir_path += "\\" + src_bfs_path.filename().generic_wstring();
 
         boost::system::error_code ec;
-        if (!fs::copy_file(src_bfs_path, fs::path(dir_path.ToStdWstring()), fs::copy_option::overwrite_if_exists, ec))
+        if (!fs::copy_file(src_bfs_path, fs::path(dir_path.ToStdWstring()), fs::copy_options::overwrite_existing, ec))
             continue;
 
         // Update model data

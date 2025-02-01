@@ -1042,6 +1042,7 @@ std::vector<std::pair<size_t, bool>> chain_extrusion_paths(std::vector<Extrusion
 void reorder_extrusion_paths(std::vector<ExtrusionPath> &extrusion_paths, const std::vector<std::pair<size_t, bool>> &chain)
 {
 	assert(extrusion_paths.size() == chain.size());
+	if(extrusion_paths.empty()) return;
 	std::vector<ExtrusionPath> out;
 	out.reserve(extrusion_paths.size());
     for (const std::pair<size_t, bool> &idx : chain) {
@@ -1909,14 +1910,15 @@ static inline void improve_ordering_by_two_exchanges_with_segment_flipping(Polyl
 	for (const FlipEdge &edge : edges) {
 		Polyline &pl = polylines[edge.source_index];
 		out.emplace_back(std::move(pl));
-		if (edge.p2 == pl.first_point().cast<double>()) {
+		if (edge.p2 == out.back().first_point().cast<double>()) {
 			// Polyline is flipped.
 			out.back().reverse();
 		} else {
 			// Polyline is not flipped.
-			assert(edge.p1 == pl.first_point().cast<double>());
+			assert(edge.p1 == out.back().first_point().cast<double>());
 		}
 	}
+	polylines = out;
 
 #ifndef NDEBUG
 	double cost_final = cost();

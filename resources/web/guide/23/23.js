@@ -7,8 +7,13 @@ var VendorPriority=new Array("bambu lab","bambulab","bbl","kexcelled","polymaker
 function OnInit()
 {
 	TranslatePage();
+    OnSelectMenu(1);
 	
 	RequestProfile();
+	
+	RequestCustomFilaments();
+	//TestCustomFilaments();
+	//OnSelectMenu(2);
 }
 
 function RequestProfile()
@@ -39,6 +44,10 @@ function HandleStudio(pVal)
 		m_ProfileItem=pVal['response'];
 		SortUI();
 	}
+	else if(strCmd=='update_custom_filaments')
+	{
+		UpdateCustomFilaments( pVal['data'] );
+	}
 }
 
 function GetFilamentShortname( sName )
@@ -62,30 +71,7 @@ function SortUI()
 			ModelList.push(OneMode);
 	}
 	
-	//machine
-//	let HtmlMachine='';
-//	
-//	let nMachine=m_ProfileItem['machine'].length;
-//	for(let n=0;n<nMachine;n++)
-//	{
-//		let OneMachine=m_ProfileItem['machine'][n];
-//		
-//		let sName=OneMachine['name'];
-//		let sModel=OneMachine['model'];
-//	
-//		if( ModelList.in_array(sModel) )
-//		{
-//			HtmlMachine+='<div><input type="checkbox" mode="'+sModel+'" onChange="MachineClick()" />'+sName+'</div>';
-//		}
-//	}
-//	
-//	$('#MachineList .CValues').append(HtmlMachine);	
-//	$('#MachineList .CValues input').prop("checked",true);
-//	if(nMachine<=1)
-//	{
-//		$('#MachineList').hide();
-//	}
-	
+
 	//model
 	let HtmlMode='';
 	nMode=ModelList.length;
@@ -121,15 +107,6 @@ function SortUI()
 		let fType=OneFila['type'];
 		let fSelect=OneFila['selected'];
 		let fModel=OneFila['models']
-		
-		//alert( fWholeName+' - '+fShortName+' - '+fVendor+' - '+fType+' - '+fSelect+' - '+fModel );
-		
-//		if(OneFila['name'].indexOf("Bambu PA-CF")>=0)
-//		{
-//			alert( fShortName+' - '+fVendor+' - '+fType+' - '+fSelect+' - '+fModel )
-//			
-//			let b=1+2;
-//		}
 		
         let bFind=false;		
 		//let bCheck=$("#MachineList input:first").prop("checked");
@@ -195,7 +172,10 @@ function SortUI()
 				let strModel=pFila.attr("model");
 				let strFilalist=pFila.attr("filalist");
 				
-				pFila.attr("model", strModel+fModel);
+				if(strModel == '' || fModel == '')
+					pFila.attr("model", '');
+				else
+					pFila.attr("model", strModel+fModel);
 				pFila.attr("filalist", strFilalist+fWholeName+';');
 			}
 			
@@ -554,5 +534,95 @@ function ConfirmSelect()
 }
 
 
+function OnSelectMenu( nIndex )
+{
+	switch(nIndex)
+	{
+		case 1:
+			$('#SystemFilamentBtn').addClass('TitleSelected');
+			$('#SystemFilamentBtn').removeClass('TitleUnselected');		
+			
+			$('#CustomFilamentBtn').addClass('TitleUnselected');
+			$('#CustomFilamentBtn').removeClass('TitleSelected');	
+			
+			$('#SystemFilamentsArea').css('display','flex');
+			$('#CustomFilamentsArea').css('display','none');
+			break;
+		case 2:
+			$('#CustomFilamentBtn').addClass('TitleSelected');
+			$('#CustomFilamentBtn').removeClass('TitleUnselected');
+			
+			$('#SystemFilamentBtn').addClass('TitleUnselected');
+			$('#SystemFilamentBtn').removeClass('TitleSelected');	
+			
+			$('#CustomFilamentsArea').css('display','flex');
+			$('#SystemFilamentsArea').css('display','none');			
+			break;
+	}
+}
+
+function RequestCustomFilaments()
+{
+	var tSend={};
+	tSend['sequence_id']=Math.round(new Date() / 1000);
+	tSend['command']="request_custom_filaments";
+		
+	SendWXMessage( JSON.stringify(tSend) );		
+}
+
+function TestCustomFilaments()
+{
+	let strTest='{"command":"update_custom_filaments","data":[{"id":"P0c71f94","name":"AMOLEN ABS 222"},{"id":"P19cc6c5","name":"PrimaSelect PLA 231654"},{"id":"P93a5c3b","name":"3DJAKE PLA 111"}],"sequence_id":"2000"}';
+	let tItem=JSON.parse(strTest);
+	
+	HandleStudio(tItem);
+}
+
+function UpdateCustomFilaments( CFList )
+{
+	let strHtml='';
+	let nTotal=CFList.length;
+	
+	for(let n=0;n<nTotal;n++)
+	{
+		let pItem=CFList[n];
+		
+		let F_id=pItem['id'];
+		let F_name=pItem['name'];
+		
+		let strAdd='<div class="CFilament_Item">'+
+			       '<a  class="CFilament_Name" title="'+F_name+'">'+F_name+'</a><img onClick="CFEdit(\''+F_id+'\')" class="CFilament_EditBtn" src="../../image/edit.svg" />'+
+		           '</div>';
+		
+		strHtml+=strAdd;
+	}
+	
+	$('#CFilament_List').html(strHtml);
+}
+
+
+function OnClickCustomFilamentAdd()
+{
+	//alert('Create New Custom Filament');
+	
+	var tSend={};
+	tSend['sequence_id']=Math.round(new Date() / 1000);
+	tSend['command']="create_custom_filament";
+		
+	SendWXMessage( JSON.stringify(tSend) );		
+}
+
+//编辑某一个自定义材料
+function CFEdit( fid )
+{
+	//alert(fid);
+	
+	var tSend={};
+	tSend['sequence_id']=Math.round(new Date() / 1000);
+	tSend['command']="modify_custom_filament";
+	tSend['id']=fid;
+		
+	SendWXMessage( JSON.stringify(tSend) );	
+}
 
 

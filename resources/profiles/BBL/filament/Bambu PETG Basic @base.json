@@ -5,6 +5,7 @@
     "from": "system",
     "filament_id": "GFG00",
     "instantiation": "false",
+    "description": "To get better transparent or translucent results with the corresponding filament, please refer to this wiki: Printing tips for transparent PETG.",
     "cool_plate_temp": [
         "0"
     ],
@@ -51,13 +52,16 @@
         "270"
     ],
     "nozzle_temperature_range_low": [
-        "240"
+        "230"
     ],
     "overhang_fan_speed": [
         "90"
     ],
     "overhang_fan_threshold": [
         "10%"
+    ],
+    "slow_down_layer_time": [
+        "12"
     ],
     "textured_plate_temp": [
         "70"

@@ -40,18 +40,24 @@ public:
 
     void ToggleStream();
 
+    void msw_rescale();
+
+    void jump_to_play();
+
 protected:
     void onStateChanged(wxMediaEvent & event);
 
     void Play();
 
-    void Stop(wxString const &msg = {});
+    void Stop(wxString const &msg = {}, wxString const &msg2 = {});
 
     void TogglePlay();
 
     void SetStatus(wxString const &msg, bool hyperlink = true);
 
 private:
+    void load();
+
     void on_show_hide(wxShowEvent & evt);
 
     void media_proc();
@@ -73,10 +79,11 @@ private:
     std::string m_lan_ip;
     std::string m_lan_user;
     std::string m_lan_passwd;
+    std::string m_dev_ver;
     std::string m_tutk_state;
     bool m_camera_exists = false;
     bool m_lan_mode = false;
-    bool m_remote_support = false;
+    int m_remote_proto = 0;
     bool m_device_busy = false;
     bool m_disable_lan = false;
     wxString m_url;
@@ -90,11 +97,13 @@ private:
     bool m_user_triggered = false;
     int m_failed_retry = 0;
     int m_failed_code = 0;
+    std::vector<double> m_stat;
     std::set<int> m_last_failed_codes;
     wxDateTime    m_last_user_play;
     wxDateTime    m_next_retry;
 
     ::Button *m_button_play;
+    ::Label * m_label_stat;
     ::Label * m_label_status;
 };
 

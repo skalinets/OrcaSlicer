@@ -9,6 +9,7 @@
 #include <boost/container/small_vector.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/static_assert.hpp>
+#include <boost/math/constants/constants.hpp>
 
 #include "../ClipperUtils.hpp"
 #include "../ExPolygon.hpp"
@@ -3035,6 +3036,39 @@ Polylines FillCubic::fill_surface(const Surface *surface, const FillParams &para
     return polylines_out; 
 }
 
+Polylines FillQuarterCubic::fill_surface(const Surface* surface, const FillParams& params)
+{
+    using namespace boost::math::float_constants;
+
+    Polylines polylines_out;
+
+    coord_t line_width = coord_t(scale_(this->spacing));
+    coord_t period = coord_t(scale_(this->spacing) / params.density) * 4;
+
+    // First half tetrahedral fill
+    double  pattern_z_shift = 0.0;
+    coord_t shift = coord_t(one_div_root_two * (scale_(z) + pattern_z_shift * period * 2)) % period;
+    shift = std::min(shift, period - shift); // symmetry due to the fact that we are applying the shift in both directions
+    shift = std::min(shift, period / 2 - line_width / 2); // don't put lines too close to each other
+    shift = std::max(shift, line_width / 2);              // don't put lines too close to each other
+    float dx1 = unscale_(shift);
+
+    // Second half tetrahedral fill
+    pattern_z_shift = 0.5;
+    shift = coord_t(one_div_root_two * (scale_(z) + pattern_z_shift * period * 2)) % period;
+    shift = std::min(shift, period - shift); // symmetry due to the fact that we are applying the shift in both directions
+    shift = std::min(shift, period / 2 - line_width / 2); // don't put lines too close to each other
+    shift = std::max(shift, line_width / 2);              // don't put lines too close to each other
+    float dx2 = unscale_(shift);
+    if (!this->fill_surface_by_multilines(
+            surface, params, 
+            {{0.f, dx1}, {0.f, -dx1}, {float(M_PI / 2.), dx2}, {float(M_PI / 2.), -dx2}},
+            polylines_out))
+        BOOST_LOG_TRIVIAL(error) << "FillQuarterCubic::fill_surface() failed to fill a region.";
+
+    return polylines_out;
+}
+
 Polylines FillSupportBase::fill_surface(const Surface *surface, const FillParams &params)
 {
     assert(! params.full_infill());
@@ -3099,7 +3133,22 @@ Points sample_grid_pattern(const Polygons& polygons, coord_t spacing, const Boun
     return sample_grid_pattern(union_ex(polygons), spacing, global_bounding_box);
 }
 
-void FillMonotonicLineWGapFill::fill_surface_extrusion(const Surface* surface, const FillParams& params, ExtrusionEntitiesPtr& out)
+// Orca: Introduced FillMonotonicLines from Prusa slicer, inhereting from FillRectilinear
+// This replaces the FillMonotonicLineWGapFill from BBS
+Polylines FillMonotonicLines::fill_surface(const Surface *surface, const FillParams &params)
+{
+    FillParams params2 = params;
+    params2.monotonic = true;
+    params2.anchor_length_max = 0.0f;
+    Polylines polylines_out;
+    if (! fill_surface_by_lines(surface, params2, 0.f, 0.f, polylines_out))
+        BOOST_LOG_TRIVIAL(error) << "FillMonotonicLines::fill_surface() failed to fill a region.";
+    return polylines_out;
+}
+    
+// Orca: Replaced with FillMonotonicLines from Prusa slicer. Moved gap fill algorithm to
+// FillBase to perform gap fill for all fill types.
+/*void FillMonotonicLineWGapFill::fill_surface_extrusion(const Surface* surface, const FillParams& params, ExtrusionEntitiesPtr& out)
 {
     ExtrusionEntityCollection *coll_nosort = new ExtrusionEntityCollection();
     coll_nosort->no_sort = this->no_sort();
@@ -3113,10 +3162,15 @@ void FillMonotonicLineWGapFill::fill_surface_extrusion(const Surface* surface, c
     params2.dont_adjust = true;
 
     //BBS: always use no overlap expolygons to avoid overflow in top surface
-    for (const ExPolygon &rectilinear_area : this->no_overlap_expolygons) {
-        rectilinear_surface.expolygon = rectilinear_area;
-        fill_surface_by_lines(&rectilinear_surface, params2, polylines_rectilinear);
-    }
+    //for (const ExPolygon &rectilinear_area : this->no_overlap_expolygons) {
+    //    rectilinear_surface.expolygon = rectilinear_area;
+    //    fill_surface_by_lines(&rectilinear_surface, params2, polylines_rectilinear);
+    //}
+    
+    // Orca: The above causes pockmarks in top layer surfaces with a properly calibrated printer with PA and EM tuned.
+    // Revert implementation to the prusa slicer approach that respects the infill/wall overlap setting
+    // while retaining the gap fill logic below. The user can adjust the overlap calue to reduce overflow if needed.
+    fill_surface_by_lines(surface, params2, polylines_rectilinear);
     ExPolygons unextruded_areas;
     Flow new_flow = params.flow;
     if (!polylines_rectilinear.empty()) {
@@ -3269,7 +3323,7 @@ void FillMonotonicLineWGapFill::fill_surface_by_lines(const Surface* surface, co
         //assert(! it->has_duplicate_points());
         it->remove_duplicate_points();
     }
-}
+}*/
 
 
 } // namespace Slic3r

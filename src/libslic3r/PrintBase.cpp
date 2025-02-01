@@ -3,6 +3,7 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/lexical_cast.hpp>
+#include <boost/log/trivial.hpp>
 
 #include "I18N.hpp"
 
@@ -78,7 +79,7 @@ std::string PrintBase::output_filename(const std::string &format, const std::str
 			cfg.opt_string("input_filename_base") + default_ext :
 			this->placeholder_parser().process(format, 0, &cfg);
         if (filename.extension().empty())
-            filename = boost::filesystem::change_extension(filename, default_ext);
+            filename.replace_extension(default_ext);
         return filename.string();
     } catch (std::runtime_error &err) {
         throw Slic3r::PlaceholderParserError(L("Failed processing of the filename_format template.") + "\n" + err.what());

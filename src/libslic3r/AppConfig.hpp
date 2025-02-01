@@ -45,6 +45,7 @@ public:
 
 	std::string get_language_code();
 	std::string get_hms_host();
+	bool get_stealth_mode();
 
 	// Clear and reset to defaults.
 	void 			   	reset();
@@ -80,8 +81,10 @@ public:
 		{ std::string value; this->get(section, key, value); return value; }
 	std::string 		get(const std::string &key) const
 		{ std::string value; this->get("app", key, value); return value; }
+	bool				get_bool(const std::string &section, const std::string &key) const
+		{ return this->get(section, key) == "true" || this->get(key) == "1"; }
 	bool				get_bool(const std::string &key) const
-		{ return this->get(key) == "true" || this->get(key) == "1"; }
+		{ return this->get_bool("app", key); }
 	void			    set(const std::string &section, const std::string &key, const std::string &value)
 	{
 #ifndef NDEBUG
@@ -209,7 +212,7 @@ public:
     }
 
 	const std::vector<PrinterCaliInfo> &get_printer_cali_infos() const { return m_printer_cali_infos; }
-    void save_printer_cali_infos(const PrinterCaliInfo& cali_info);
+    void save_printer_cali_infos(const PrinterCaliInfo& cali_info, bool need_change_status = true);
 
 	// return recent/last_opened_folder or recent/settings_folder or empty string.
 	std::string 		get_last_dir() const;
@@ -229,7 +232,9 @@ public:
 	std::string         get_country_code();
     bool				is_engineering_region();
 
-	// reset the current print / filament / printer selections, so that 
+    void                save_custom_color_to_config(const std::vector<std::string> &colors);
+    std::vector<std::string> get_custom_color_from_config();
+	// reset the current print / filament / printer selections, so that
 	// the  PresetBundle::load_selections(const AppConfig &config) call will select
 	// the first non-default preset when called.
     void                reset_selections();
@@ -243,7 +248,10 @@ public:
 
 	// Get the Slic3r version check url.
 	// This returns a hardcoded string unless it is overriden by "version_check_url" in the ini file.
-	std::string 		version_check_url() const;
+	std::string 		version_check_url(bool stable_only = false) const;
+
+	// Get the Orca profile update url.
+	std::string 		profile_update_url() const;
 
 	// Returns the original Slic3r version found in the ini file before it was overwritten
 	// by the current version
@@ -287,6 +295,7 @@ public:
 
 	static const std::string SECTION_FILAMENTS;
     static const std::string SECTION_MATERIALS;
+    static const std::string SECTION_EMBOSS_STYLE;
 
 private:
 	template<typename T>

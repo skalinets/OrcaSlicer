@@ -5,6 +5,7 @@
     "from": "system",
     "filament_id": "GFN05",
     "instantiation": "false",
+    "description": "When printing this filament, there's a risk of nozzle clogging, oozing, warping and low layer adhesion strength. To get better results, please refer to this wiki: Printing Tips for High Temp / Engineering materials.",
     "fan_cooling_layer_time": [
         "5"
     ],
@@ -13,6 +14,9 @@
     ],
     "fan_min_speed": [
         "10"
+    ],
+    "filament_cost": [
+        "79.99"
     ],
     "filament_density": [
         "1.10"

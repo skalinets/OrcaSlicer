@@ -117,7 +117,7 @@ void TempInput::Create(wxWindow *parent, wxString text, wxString label, wxString
         }
     });
     text_ctrl->SetFont(Label::Body_13);
-    text_ctrl->SetForegroundColour(text_color.colorForStates(StateColor::Normal));
+    text_ctrl->SetForegroundColour(StateColor::darkModeColorFor(*wxBLACK));
     if (!normal_icon.IsEmpty()) { this->normal_icon = ScalableBitmap(this, normal_icon.ToStdString(), 16); }
     if (!actice_icon.IsEmpty()) { this->actice_icon = ScalableBitmap(this, actice_icon.ToStdString(), 16); }
     this->degree_icon = ScalableBitmap(this, "degree", 16);
@@ -198,7 +198,7 @@ void TempInput::Warning(bool warn, WarningType type)
 
             wxBoxSizer *sizer_body = new wxBoxSizer(wxVERTICAL);
 
-            auto body = new wxPanel(wdialog, wxID_ANY, wxDefaultPosition, {this->GetSize().x - 4, -1}, wxTAB_TRAVERSAL);
+            auto body = new wxPanel(wdialog, wxID_ANY, wxDefaultPosition, {FromDIP(260), -1}, wxTAB_TRAVERSAL);
             body->SetBackgroundColour(wxColour(0xFFFFFF));
 
 
