@@ -167,6 +167,20 @@ def build_timeline_and_interpolate(track, tool_changes, m73_points, total_lines,
 
         total_duration = t
 
+        # ── Scale physical timeline to match M73 trapezoid estimate ──────
+        # Physical dist/speed ignores acceleration/deceleration, giving an
+        # underestimated total (e.g. 29 min vs real 48 min).  M73 from the
+        # trapezoid planner accounts for accel/decel and is closer to reality.
+        # We keep the physical DISTRIBUTION (proportions) but scale the X-axis
+        # so total time matches M73.
+        if m73_points and total_duration > 0:
+            m73_total_sec = max(p[1] for p in m73_points) * 60  # max R value → seconds
+            if m73_total_sec > total_duration:
+                scale = m73_total_sec / total_duration
+                for j in range(len(cumulative)):
+                    cumulative[j] *= scale
+                total_duration *= scale
+
         def get_time(line):
             idx = max(1, min(int(round(line)), len(cumulative) - 1))
             return cumulative[idx]
