@@ -3135,6 +3135,27 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
     dy              = solid_infill ? m_nozzle_change_perimeter_width : dy;
     nozzle_change_line_count = solid_infill ? std::numeric_limits<int>::max() : nozzle_change_line_count;
     m_left_to_right = true;
+
+    // Vortek H2C: per_cooling_max_speed — clamp ramming speed by cooldown time
+    // so departing nozzle reaches precool_target_temp before carousel rotation.
+    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp ramming() L3449-3462
+    // BBS: "nozzle change does not require forcing a cooldown" — only extruder changes need this.
+    if (extruder_change) {
+        float ramming_length = nozzle_change_line_count * (xr - xl);
+        int   extruder_id    = m_filament_map.empty() ? 0 : m_filament_map[m_current_tool] - 1;
+        float precool_t      = (extruder_id >= 0 && extruder_id < (int)m_filpar[m_current_tool].precool_t.first.size())
+                                 ? m_filpar[m_current_tool].precool_t.first[extruder_id] : 0.f;
+        float precool_t_fl   = (extruder_id >= 0 && extruder_id < (int)m_filpar[m_current_tool].precool_t_first_layer.first.size())
+                                 ? m_filpar[m_current_tool].precool_t_first_layer.first[extruder_id] : 0.f;
+        float per_cooling_max_speed = nozzle_change_speed;
+        if (is_first_layer() && precool_t_fl > EPSILON)
+            per_cooling_max_speed = ramming_length / precool_t_fl * 60.f;
+        else if (precool_t > EPSILON)
+            per_cooling_max_speed = ramming_length / precool_t * 60.f;
+        if (nozzle_change_speed > per_cooling_max_speed) nozzle_change_speed = per_cooling_max_speed;
+        if (bridge_speed > per_cooling_max_speed)        bridge_speed = per_cooling_max_speed;
+    }
+
     int real_nozzle_change_line_count = 0;
     bool need_change_flow              = false;
     for (int i = 0; true; ++i) {
