@@ -7995,6 +7995,15 @@ void PrintConfigDef::init_fff_params()
     def->mode = comDevelop;
     def->set_default_value(new ConfigOptionBool(false));
 
+    // Reference to BBS: BambuStudio/src/libslic3r/PrintConfig.cpp L2617-2624
+    def           = this->add("filament_prime_volume", coFloats);
+    def->label    = L("Filament change");
+    def->tooltip  = L("The volume of material required to prime the extruder on the tower, excluding a hotend change.");
+    def->sidetext = L("mm³");
+    def->min      = 1.0;
+    def->mode     = comSimple;
+    def->set_default_value(new ConfigOptionFloats{45.});
+
     def           = this->add("filament_prime_volume_nc", coFloats);
     def->label    = L("Hotend change");
     def->tooltip  = L("The volume of material required to prime the extruder for a hotend change on the tower.");
