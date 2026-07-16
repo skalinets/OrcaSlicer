@@ -133,7 +133,27 @@ def build_timeline_and_interpolate(track, tool_changes, m73_points, total_lines,
         timeline = [(1, 0), (total_lines, total_lines * 0.02)]
 
     line_to_time = {}
-    track_m620 = {t["line"]: t.get("in_m620", False) for t in track}
+    # Build continuous M620 ranges from sparse track samples.
+    # track samples only cover lines with temp events; lines between samples
+    # (hundreds of G1 moves inside M620→M621 blocks) need weight=500 too.
+    m620_ranges = []  # list of (start_line, end_line) inclusive
+    m620_start = None
+    for t in track:
+        if t.get("in_m620", False):
+            if m620_start is None:
+                m620_start = t["line"]
+        else:
+            if m620_start is not None:
+                m620_ranges.append((m620_start, t["line"]))
+                m620_start = None
+    if m620_start is not None:
+        m620_ranges.append((m620_start, track[-1]["line"] if track else m620_start))
+
+    def is_in_m620(l):
+        for rs, re_ in m620_ranges:
+            if rs <= l <= re_:
+                return True
+        return False
     
     for k in range(len(timeline) - 1):
         line1, time1 = timeline[k]
@@ -147,7 +167,7 @@ def build_timeline_and_interpolate(track, tool_changes, m73_points, total_lines,
         weights = []
         total_w = 0.0
         for l in range(line1, line2 + 1):
-            is_tc = track_m620.get(l, False)
+            is_tc = is_in_m620(l)
             w = 500.0 if is_tc else 1.0
             if l in m400_weights:
                 w += m400_weights[l] * 50.0
@@ -250,13 +270,21 @@ def parse_file_data(filepath):
                                 toolchange_zones_raw.append((tc_block_start, line_num))
                                 tc_block_start = None
 
-                        # Match both Orca (;_NOZZLE_CHANGE_START) and BBS (; NOZZLE_CHANGE_START)
-                        if 'NOZZLE_CHANGE_START' in gl:
+                        # Match BBS (; NOZZLE_CHANGE_START) and Orca (; Nozzle change start/end)
+                        if 'NOZZLE_CHANGE_START' in gl or 'Nozzle change start' in gl:
                             nc_start = line_num
-                        elif 'NOZZLE_CHANGE_END' in gl:
+                        elif 'NOZZLE_CHANGE_END' in gl or 'Nozzle change end' in gl:
                             if nc_start is not None:
                                 tc_zones_raw.append((nc_start, line_num))
                                 nc_start = None
+
+                        # Fallback: detect M632 M N / M633 as carousel nozzle change zones
+                        # (Orca doesn't always emit ; Nozzle change start/end around M632/M633)
+                        if gl.startswith('M632') and ' M ' in gl and nc_start is None:
+                            nc_start = line_num
+                        elif gl.startswith('M633') and nc_start is not None:
+                            tc_zones_raw.append((nc_start, line_num))
+                            nc_start = None
                         # Match both Orca (; CP TOOLCHANGE WIPE) and BBS (; CP_TOOLCHANGE_WIPE)
                         elif 'CP TOOLCHANGE WIPE' in gl or 'CP_TOOLCHANGE_WIPE' in gl:
                             wipe_start = line_num
