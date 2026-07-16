@@ -614,6 +614,8 @@ void GCodeProcessor::TimeMachine::calculate_time(GCodeProcessorResult& result, P
             float leftover = 0.0f;
             for (size_t i = additional_buffer_idx; i < additional_buffer.size(); ++i)
                 leftover += additional_buffer[i].second;
+            BOOST_LOG_TRIVIAL(debug) << "calculate_time(is_final): leftover=" << leftover
+                << "s from " << (additional_buffer.size() - additional_buffer_idx) << " items";
             time += double(leftover);
             gcode_time.cache += leftover;
         } else {
@@ -1527,7 +1529,15 @@ void GCodeProcessor::run_post_process()
                 tag.remove_suffix(1);
             tag.remove_prefix(1); // strip leading ';'
             if (tag == Machine_Start_GCode_End_Tag) { m_machine_start_gcode_end_line_id = line_id; return; }
-            if (tag == Machine_End_GCode_Start_Tag) { m_machine_end_gcode_start_line_id = line_id; return; }
+            if (tag == Machine_End_GCode_Start_Tag) {
+                m_machine_end_gcode_start_line_id = line_id;
+                // End gcode M400 delays (air purification, timelapse, sound) are post-print
+                // by definition. Skip them so M73 reports print completion time.
+                // Reference to BBS: BambuStudio/src/libslic3r/GCode/GCodeProcessor.cpp —
+                // BBS drops leftover in calculate_time(is_final=true), achieving the same.
+                m_skip_end_gcode_delays = true;
+                return;
+            }
         }
 
         // filament-change commands: T<fid>, ;VT<fid>, M1020 S<fid>, each optionally " H<nozzle_id>"
@@ -2922,6 +2932,8 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
         m_preheat_steps = 1;
     m_result.backtrace_enabled = config.ooze_prevention && m_preheat_time > 0 && (m_is_XL_printer || (!m_single_extruder_multi_material && filament_count > 1));
 
+    m_support_air_filtration = config.support_air_filtration.value;
+
     assert(config.nozzle_volume.size() == config.nozzle_diameter.size());
     m_nozzle_volume.resize(config.nozzle_volume.size());
     for (size_t idx = 0; idx < config.nozzle_volume.size(); ++idx)
@@ -3074,6 +3086,10 @@ void GCodeProcessor::apply_config(const DynamicPrintConfig& config)
 
     const ConfigOptionInt *nozzle_HRC = config.option<ConfigOptionInt>("nozzle_hrc");
     if (nozzle_HRC != nullptr) m_result.nozzle_hrc = nozzle_HRC->value;
+
+    const ConfigOptionBool *support_air_filt = config.option<ConfigOptionBool>("support_air_filtration");
+    if (support_air_filt != nullptr)
+        m_support_air_filtration = support_air_filt->value;
 
     const ConfigOptionInts* physical_extruder_map = config.option<ConfigOptionInts>("physical_extruder_map");
     if (physical_extruder_map != nullptr) {
@@ -3492,6 +3508,8 @@ void GCodeProcessor::reset()
     m_extruder_blocks.clear();
     m_machine_start_gcode_end_line_id = (unsigned int) (-1);
     m_machine_end_gcode_start_line_id = (unsigned int) (-1);
+    m_support_air_filtration = false;
+    m_skip_end_gcode_delays = false;
     m_remaining_volume = std::vector<float>(MAXIMUM_EXTRUDER_NUMBER, 0.f);
 
     m_line_id = 0;
@@ -4216,6 +4234,15 @@ void GCodeProcessor::process_tags(const std::string_view comment, bool producers
 
     if (boost::starts_with(comment, GCodeProcessor::VFlush_End_Tag)) {
         m_virtual_flushing = false;
+        return;
+    }
+
+    // End gcode marker: skip M400 S/P delays after this point so M73 reports
+    // print completion time, not post-print filtration/cooldown time.
+    // Reference to BBS: BambuStudio/src/libslic3r/GCode/GCodeProcessor.cpp —
+    // BBS drops leftover in calculate_time(is_final=true), achieving the same.
+    if (comment == Machine_End_GCode_Start_Tag) {
+        m_skip_end_gcode_delays = true;
         return;
     }
 
@@ -6401,6 +6428,18 @@ void GCodeProcessor::process_M400(const GCodeReader::GCodeLine& line)
     float value_p = 0.0;
     if (line.has_value('S', value_s) || line.has_value('P', value_p)) {
         value_s += value_p * 0.001;
+
+
+        // End gcode M400 delays (air purification M400 S180, timelapse M400 S5,
+        // sound M400 S1) are post-print by definition. Skip them so M73 reports
+        // print completion time, not post-print filtration/cooldown time.
+        // Reference to BBS: BambuStudio/src/libslic3r/GCode/GCodeProcessor.cpp —
+        // BBS drops leftover in calculate_time(is_final=true), achieving the same
+        // effect of excluding end gcode delays from M73 total. We skip at the
+        // source instead, leaving calculate_time unchanged for all printers.
+        if (m_skip_end_gcode_delays)
+            return;
+
         simulate_st_synchronize(value_s);
     }
 }
