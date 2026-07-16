@@ -3940,6 +3940,9 @@ void Print::_make_wipe_tower()
                              m_wipe_tower_data.tool_ordering.empty() ? 0.f : m_wipe_tower_data.tool_ordering.back().print_z, m_wipe_tower_data.tool_ordering.all_extruders());
         wipe_tower.set_has_tpu_filament(this->has_tpu_filament());
         wipe_tower.set_filament_map(this->get_filament_maps());
+        // Vortek H2C: pass nozzle-level map for carousel rotation detection in tool_change_new()
+        // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.hpp set_nozzle_group_result()
+        wipe_tower.set_filament_nozzle_map(this->get_filament_nozzle_maps());
         // Feed the has_filament_switcher device flag (develop-only dynamic key, read defensively from
         // the full config — no shipping profile sets it) and the shared printable bed used by the PETG
         // pre-extrusion offset clamp. Both are inert unless has_filament_switcher is set.

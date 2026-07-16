@@ -1893,7 +1893,7 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change(int old_filament_id, int 
         .set_initial_tool(m_current_tool)
         .set_extrusion_flow(m_extrusion_flow)
         .set_y_shift(m_y_shift + (new_filament_id != (unsigned int) (-1) && (m_current_shape == SHAPE_REVERSED) ? m_layer_info->depth - m_layer_info->toolchanges_depth() : 0.f))
-        .append("; Nozzle change start\n");
+        .append(format_nozzle_change_tag(true, old_filament_id, new_filament_id));
 
     box_coordinates cleaning_box(Vec2f(m_perimeter_width, m_perimeter_width), m_wipe_tower_width - 2 * m_perimeter_width,
                                  (new_filament_id != (unsigned int) (-1) ? wipe_depth + m_depth_traversed - m_perimeter_width : m_wipe_tower_depth - m_perimeter_width));
@@ -1969,7 +1969,7 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change(int old_filament_id, int 
         }
     }
 
-    writer.append("; Nozzle change end\n");
+    writer.append(format_nozzle_change_tag(false, old_filament_id, new_filament_id));
 
     result.start_pos = writer.start_pos_rotated();
     result.end_pos   = writer.pos();
@@ -2546,6 +2546,21 @@ void WipeTower::plan_toolchange(float z_par, float layer_height_par, unsigned in
             nozzle_change_depth = nozzle_change_line_count * m_nozzle_change_perimeter_width;
         depth += nozzle_change_depth;
     }
+    // Vortek H2C override: carousel rotation (same extruder, different nozzle) also needs ramming depth
+    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp plan_toolchange() L2862 is_need_ramming()
+    if (nozzle_change_depth == 0
+        && !m_filament_nozzle_map.empty()
+        && old_tool < m_filament_nozzle_map.size() && new_tool < m_filament_nozzle_map.size()
+        && m_filament_nozzle_map[old_tool] != m_filament_nozzle_map[new_tool]) {
+        double e_flow                   = nozzle_change_extrusion_flow(layer_height_par);
+        double length                   = m_filaments_change_length[old_tool] / e_flow;
+        int    nozzle_change_line_count = length / (m_wipe_tower_width - 2*m_nozzle_change_perimeter_width) + 1;
+        if (has_tpu_filament())
+            nozzle_change_depth = m_tpu_fixed_spacing * nozzle_change_line_count * m_nozzle_change_perimeter_width;
+        else
+            nozzle_change_depth = nozzle_change_line_count * m_nozzle_change_perimeter_width;
+        depth += nozzle_change_depth;
+    }
     WipeTowerInfo::ToolChange tool_change = WipeTowerInfo::ToolChange(old_tool, new_tool, depth, 0.f, 0.f, wipe_volume, length_to_extrude, purge_volume);
     tool_change.nozzle_change_depth       = nozzle_change_depth;
     m_plan.back().tool_changes.push_back(tool_change);
@@ -2819,6 +2834,18 @@ WipeTower::ToolChangeResult WipeTower::tool_change_new(size_t new_tool, bool sol
         && is_valid_last_layer(m_current_tool, m_cur_layer_id, m_z_pos)) {
         m_nozzle_change_result = nozzle_change_new(m_current_tool, new_tool, solid_nozzlechange);
     }
+    // Vortek H2C override: also trigger nozzle_change for carousel rotations within same extruder.
+    // Original Orca code above only checks m_filament_map (extruder-level). For H2C carousel,
+    // filaments on the same extruder but different nozzles also need ramming.
+    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp tool_change_new() L3244
+    // BBS uses is_need_ramming() = !are_filaments_same_nozzle() for nozzle-level gating.
+    if (m_nozzle_change_result.gcode.empty()
+        && !m_filament_nozzle_map.empty()
+        && m_current_tool < m_filament_nozzle_map.size() && new_tool < m_filament_nozzle_map.size()
+        && m_filament_nozzle_map[m_current_tool] != m_filament_nozzle_map[new_tool]
+        && is_valid_last_layer(m_current_tool, m_cur_layer_id, m_z_pos)) {
+        m_nozzle_change_result = nozzle_change_new(m_current_tool, new_tool, solid_nozzlechange);
+    }
 
     size_t old_tool = m_current_tool;
     float wipe_depth          = 0.f;
@@ -2996,7 +3023,16 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
         .set_z(m_z_pos)
         .set_initial_tool(m_current_tool)
         .set_y_shift(m_y_shift + (new_filament_id != (unsigned int) (-1) && (m_current_shape == SHAPE_REVERSED) ? m_layer_info->depth - m_layer_info->toolchanges_depth() : 0.f))
-        .append("; Nozzle change start\n");
+        .append(format_nozzle_change_tag(true, old_filament_id, new_filament_id));
+
+    // Vortek H2C: carousel barrier inside nozzle change zone (emit M632/M633 ONLY for carousel = !extruder_change)
+    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp ramming() L3421-3429
+    bool extruder_change = !is_in_same_extruder(old_filament_id, new_filament_id);
+    if (!extruder_change && m_is_multiple_nozzle) {
+        writer.append("M632 S" + std::to_string(new_filament_id) + " M N\n");
+        // Precool NOT emitted here — PreCoolingInjector handles it in PostProcessor
+        writer.append("M633\n");
+    }
 
     WipeTowerBlock* block = get_block_by_category(m_filpar[old_filament_id].category, false);
     if (!block) {
@@ -3080,12 +3116,20 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
         }
     }
 
-    writer.append("; Nozzle change end\n");
+    // Vortek H2C: re-arm carousel barrier after ramming (BBS ramming() L3493-3497, L3535)
+    if (!extruder_change && m_is_multiple_nozzle) {
+        writer.append("M632 S" + std::to_string(new_filament_id) + " M N\n");
+        writer.append("M633\n");
+    }
+
+    writer.append(format_nozzle_change_tag(false, old_filament_id, new_filament_id));
 
     result.start_pos = writer.start_pos_rotated();
     result.origin_start_pos = initial_position;
     result.end_pos   = writer.pos_rotated();
     result.gcode     = writer.gcode();
+    // Matches BBS: result.is_extruder_change = extruder_change (ramming() L3544)
+    result.is_extruder_change = extruder_change;
     return result;
 }
 
@@ -3534,6 +3578,10 @@ void WipeTower::toolchange_wipe_new(WipeTowerWriter &writer, const box_coordinat
     auto add_M104_by_requirement = [&writer, &format_line_M104, &should_heating, this]() {
         if (m_filpar[m_current_tool].filament_cooling_before_tower < EPSILON) return;
         if (!should_heating) return;
+        // Vortek H2C: skip for carousel — M632+M633 already emitted inside nozzle_change_new()
+        // For extruder change (!is_extruder_change = carousel), M632 already inside
+        // Reference to BBS: BBS ramming() L3421 — M632 only for !extruder_change; result.is_extruder_change L3544
+        if (!m_nozzle_change_result.is_extruder_change) return;
         float target_temp = is_first_layer() ? m_filpar[m_current_tool].nozzle_temperature_initial_layer : m_filpar[m_current_tool].nozzle_temperature;
         writer.append(format_line_M104(target_temp, m_filament_map[m_current_tool] - 1));
     };
@@ -3708,6 +3756,20 @@ bool WipeTower::is_in_same_extruder(int filament_id_1, int filament_id_2)
         return true;
 
     return m_filament_map[filament_id_1] == m_filament_map[filament_id_2];
+}
+
+// Vortek H2C: format BBS-compatible NOZZLE_CHANGE_START/END tag with OF/NF/ON/NN payload.
+// Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp format_nozzle_change_line() L3388
+std::string WipeTower::format_nozzle_change_tag(bool start, int old_filament_id, int new_filament_id) const
+{
+    const std::string &tag = start ? GCodeProcessor::Nozzle_Change_Start_Tag : GCodeProcessor::Nozzle_Change_End_Tag;
+    int old_nozzle = (old_filament_id >= 0 && old_filament_id < (int)m_filament_nozzle_map.size())
+                         ? m_filament_nozzle_map[old_filament_id] : -1;
+    int new_nozzle = (new_filament_id >= 0 && new_filament_id < (int)m_filament_nozzle_map.size())
+                         ? m_filament_nozzle_map[new_filament_id] : -1;
+    char buff[96];
+    snprintf(buff, sizeof(buff), ";%s OF%d NF%d ON%d NN%d\n", tag.c_str(), old_filament_id, new_filament_id, old_nozzle, new_nozzle);
+    return std::string(buff);
 }
 
 // Per-extruder printable-height clamp: is an extruder still allowed to print on this wipe-tower layer,
@@ -3899,6 +3961,21 @@ void WipeTower::plan_tower_new()
                 float depth               = std::ceil(length_to_extrude / width) * m_perimeter_width;
                 float nozzle_change_depth = 0;
                 if (!m_filament_map.empty() && m_filament_map[toolchange.old_tool] != m_filament_map[toolchange.new_tool]) {
+                    double e_flow                   = nozzle_change_extrusion_flow(m_plan[idx].height);
+                    double length                   = m_filaments_change_length[toolchange.old_tool] / e_flow;
+                    int    nozzle_change_line_count = length / (m_wipe_tower_width - 2*m_nozzle_change_perimeter_width) + 1;
+                    if (has_tpu_filament())
+                        nozzle_change_depth = m_tpu_fixed_spacing * nozzle_change_line_count * m_nozzle_change_perimeter_width;
+                    else
+                        nozzle_change_depth = nozzle_change_line_count * m_nozzle_change_perimeter_width;
+                    depth += nozzle_change_depth;
+                }
+                // Vortek H2C override: carousel rotation also needs ramming depth
+                // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp plan_tower_new() uses is_need_ramming()
+                if (nozzle_change_depth == 0
+                    && !m_filament_nozzle_map.empty()
+                    && toolchange.old_tool < (int)m_filament_nozzle_map.size() && toolchange.new_tool < (int)m_filament_nozzle_map.size()
+                    && m_filament_nozzle_map[toolchange.old_tool] != m_filament_nozzle_map[toolchange.new_tool]) {
                     double e_flow                   = nozzle_change_extrusion_flow(m_plan[idx].height);
                     double length                   = m_filaments_change_length[toolchange.old_tool] / e_flow;
                     int    nozzle_change_line_count = length / (m_wipe_tower_width - 2*m_nozzle_change_perimeter_width) + 1;

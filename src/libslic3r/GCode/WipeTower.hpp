@@ -58,6 +58,8 @@ public:
 		Vec2f origin_start_pos;  // not rotated
 
         std::vector<Vec2f> wipe_path;
+        // Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.hpp NozzleChangeResult::is_extruder_change
+        bool is_extruder_change{true};
     };
 
 	struct ToolChangeResult
@@ -309,6 +311,9 @@ public:
     int get_number_of_toolchanges() const { return m_num_tool_changes; }
 
 	void set_filament_map(const std::vector<int> &filament_map) { m_filament_map = filament_map; }
+	// Vortek H2C: filament_id → physical nozzle_id for carousel rotation detection
+	// Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.hpp set_nozzle_group_result()
+	void set_filament_nozzle_map(const std::vector<int> &nozzle_map) { m_filament_nozzle_map = nozzle_map; }
 
 	void set_has_tpu_filament(bool has_tpu) { m_has_tpu_filament = has_tpu; }
     bool has_tpu_filament() const { return m_has_tpu_filament; }
@@ -395,6 +400,9 @@ public:
     void add_depth_to_block(int filament_id, int filament_adhesiveness_category, float depth, bool is_nozzle_change = false);
 	int get_filament_category(int filament_id);
 	bool is_in_same_extruder(int filament_id_1, int filament_id_2);
+	// Vortek H2C: format BBS-compatible NOZZLE_CHANGE_START/END tag with OF/NF/ON/NN payload
+	// Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp format_nozzle_change_line()
+	std::string format_nozzle_change_tag(bool start, int old_filament_id, int new_filament_id) const;
 	void reset_block_status();
     int get_wall_filament_for_all_layer();
 	// for generate new wipe tower
@@ -453,6 +461,7 @@ private:
     size_t       m_cur_layer_id;
     NozzleChangeResult m_nozzle_change_result;
     std::vector<int>   m_filament_map;
+    std::vector<int>   m_filament_nozzle_map;  // Vortek H2C: filament_id → physical nozzle_id
     bool               m_has_tpu_filament{false};
     bool               m_is_multi_extruder{false};
     bool               m_use_gap_wall{false};
