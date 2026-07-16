@@ -361,6 +361,14 @@ public:
         // Distance (in mm of filament) that a hotend is allowed to pre-cool before the
         // tower is reached; drives the prime-tower heating-during-wipe model (multi-nozzle only).
         float               filament_cooling_before_tower = 0.f;
+        // Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.hpp L335-339
+        // Carousel-specific ramming, precool, and reverse travel parameters.
+        // .first = extruder change, .second = nozzle change (carousel)
+        std::pair<float,float>  max_e_ramming_speed{0.f, 0.f};
+        std::pair<float,float>  ramming_travel_time{0.f, 0.f};
+        std::pair<int,int>      precool_target_temp{0, 0};
+        std::pair<std::vector<float>,std::vector<float>> precool_t;
+        std::pair<std::vector<float>,std::vector<float>> precool_t_first_layer;
     };
 
 
@@ -564,6 +572,8 @@ private:
 
 	bool is_tpu_filament(int filament_id) const;
 	bool is_petg_filament(int filament_id) const;
+    // Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp L3080-3085
+    bool is_need_reverse_travel(int filament_id, bool extruder_change) const;
 
 	// BBS
 	box_coordinates align_perimeter(const box_coordinates& perimeter_box);

@@ -1609,6 +1609,60 @@ void WipeTower::set_extruder(size_t idx, const PrintConfig& config)
     if (max_vol_speed!= 0.f)
         m_filpar[idx].max_e_speed = (max_vol_speed / filament_area());
 
+    // Vortek H2C: carousel-specific ramming, precool, and reverse travel parameters
+    // Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp L1878-1932
+    {
+        // Ramming speed: .first = extruder change, .second = nozzle change (carousel)
+        float ramming_vol_speed = float(config.filament_max_volumetric_speed.get_at(idx));
+        if (config.filament_max_volumetric_speed.is_nil(idx) || ramming_vol_speed < EPSILON)
+            ramming_vol_speed = max_vol_speed;
+        m_filpar[idx].max_e_ramming_speed.first = (ramming_vol_speed / filament_area());
+
+        float ramming_vol_speed_nc = ramming_vol_speed; // default: same as extruder change
+        if (!config.filament_ramming_volumetric_speed_nc.is_nil(idx)
+            && !is_approx(config.filament_ramming_volumetric_speed_nc.get_at(idx), -1.))
+            ramming_vol_speed_nc = float(config.filament_ramming_volumetric_speed_nc.get_at(idx));
+        m_filpar[idx].max_e_ramming_speed.second = (ramming_vol_speed_nc / filament_area());
+    }
+    {
+        // Precool target temp: .first = extruder change, .second = nozzle change (carousel)
+        m_filpar[idx].precool_target_temp = {0, 0};
+        if (!config.filament_pre_cooling_temperature.is_nil(idx))
+            m_filpar[idx].precool_target_temp.first = config.filament_pre_cooling_temperature.get_at(idx);
+        if (!config.filament_pre_cooling_temperature_nc.is_nil(idx))
+            m_filpar[idx].precool_target_temp.second = config.filament_pre_cooling_temperature_nc.get_at(idx);
+    }
+    {
+        // Precool timing: (nozzle_temp - precool_temp) / hotend_cooling_rate
+        int extruder_count = m_is_multi_extruder ? 2 : 1; // H2C = 2 extruders
+        float nozzle_temp = float(config.nozzle_temperature.is_nil(idx) ? 0 : config.nozzle_temperature.get_at(idx));
+        float nozzle_temp_fl = float(config.nozzle_temperature_initial_layer.is_nil(idx) ? nozzle_temp : config.nozzle_temperature_initial_layer.get_at(idx));
+        m_filpar[idx].precool_t.first.resize(extruder_count, 0.f);
+        m_filpar[idx].precool_t.second.resize(extruder_count, 0.f);
+        m_filpar[idx].precool_t_first_layer.first.resize(extruder_count, 0.f);
+        m_filpar[idx].precool_t_first_layer.second.resize(extruder_count, 0.f);
+        std::vector<double> cooling_rates = config.hotend_cooling_rate.values;
+        for (int i = 0; i < extruder_count && i < (int)cooling_rates.size(); i++) {
+            if (cooling_rates[i] < EPSILON) continue;
+            if (m_filpar[idx].precool_target_temp.first != 0) {
+                m_filpar[idx].precool_t.first[i] = std::max(0.f, nozzle_temp - float(m_filpar[idx].precool_target_temp.first)) / float(cooling_rates[i]);
+                m_filpar[idx].precool_t_first_layer.first[i] = std::max(0.f, nozzle_temp_fl - float(m_filpar[idx].precool_target_temp.first)) / float(cooling_rates[i]);
+            }
+            if (m_filpar[idx].precool_target_temp.second != 0) {
+                m_filpar[idx].precool_t.second[i] = std::max(0.f, nozzle_temp - float(m_filpar[idx].precool_target_temp.second)) / float(cooling_rates[i]);
+                m_filpar[idx].precool_t_first_layer.second[i] = std::max(0.f, nozzle_temp_fl - float(m_filpar[idx].precool_target_temp.second)) / float(cooling_rates[i]);
+            }
+        }
+    }
+    {
+        // Ramming travel time: .first = extruder change, .second = nozzle change (carousel)
+        m_filpar[idx].ramming_travel_time = {0.f, 0.f};
+        if (!config.filament_ramming_travel_time.is_nil(idx))
+            m_filpar[idx].ramming_travel_time.first = float(config.filament_ramming_travel_time.get_at(idx));
+        if (!config.filament_ramming_travel_time_nc.is_nil(idx))
+            m_filpar[idx].ramming_travel_time.second = float(config.filament_ramming_travel_time_nc.get_at(idx));
+    }
+
     m_perimeter_width = nozzle_diameter * Width_To_Nozzle_Ratio; // all extruders are now assumed to have the same diameter
     m_nozzle_change_perimeter_width = 2*m_perimeter_width;
     // BBS: remove useless config
@@ -2710,6 +2764,14 @@ bool WipeTower::is_petg_filament(int filament_id) const
     return m_filpar[filament_id].material == "PETG";
 }
 
+// Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp L3080-3085
+bool WipeTower::is_need_reverse_travel(int filament_id, bool extruder_change) const
+{
+    if (extruder_change)
+        return m_filpar[filament_id].ramming_travel_time.first > EPSILON;
+    return m_filpar[filament_id].ramming_travel_time.second > EPSILON;
+}
+
 // BBS: consider both soluable and support properties
 // Return index of first toolchange that switches to non-soluble and non-support extruder
 // ot -1 if there is no such toolchange.
@@ -3010,13 +3072,22 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
     }
 
     float nz_extrusion_flow = nozzle_change_extrusion_flow(m_layer_height);
-    float nozzle_change_speed = 60.0f * m_filpar[m_current_tool].max_e_speed / nz_extrusion_flow;
-    nozzle_change_speed       = solid_infill ? 40.f * 60.f : nozzle_change_speed;//If the contact layers belong to different categories, then reduce the speed.
+    // Vortek H2C: carousel barrier inside nozzle change zone (emit M632/M633 ONLY for carousel = !extruder_change)
+    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp ramming() L3421-3429
+    bool extruder_change = !is_in_same_extruder(old_filament_id, new_filament_id);
+    // Vortek H2C: use carousel-specific ramming speed when available
+    // Matches BBS: ramming() L3435-3436 — max_e_ramming_speed.first (ext change) / .second (carousel)
+    float max_e_ramming = extruder_change
+        ? m_filpar[m_current_tool].max_e_ramming_speed.first
+        : m_filpar[m_current_tool].max_e_ramming_speed.second;
+    if (max_e_ramming < EPSILON) max_e_ramming = m_filpar[m_current_tool].max_e_speed; // fallback
+    float nozzle_change_speed = 60.0f * max_e_ramming / nz_extrusion_flow;
+    nozzle_change_speed       = solid_infill ? 40.f * 60.f : nozzle_change_speed;
 
     if (is_tpu_filament(m_current_tool)) {
         nozzle_change_speed *= 0.25;
     }
-    float bridge_speed = std::min(60.0f * m_filpar[m_current_tool].max_e_speed / nozzle_change_extrusion_flow(0.2), nozzle_change_speed); // limit the bridge speed by add flow
+    float bridge_speed = std::min(60.0f * max_e_ramming / nozzle_change_extrusion_flow(0.2), nozzle_change_speed);
 
     WipeTowerWriter writer(m_layer_height, m_nozzle_change_perimeter_width, m_gcode_flavor, m_filpar);
     writer.set_extrusion_flow(nz_extrusion_flow)
@@ -3025,12 +3096,19 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
         .set_y_shift(m_y_shift + (new_filament_id != (unsigned int) (-1) && (m_current_shape == SHAPE_REVERSED) ? m_layer_info->depth - m_layer_info->toolchanges_depth() : 0.f))
         .append(format_nozzle_change_tag(true, old_filament_id, new_filament_id));
 
-    // Vortek H2C: carousel barrier inside nozzle change zone (emit M632/M633 ONLY for carousel = !extruder_change)
-    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp ramming() L3421-3429
-    bool extruder_change = !is_in_same_extruder(old_filament_id, new_filament_id);
     if (!extruder_change && m_is_multiple_nozzle) {
         writer.append("M632 S" + std::to_string(new_filament_id) + " M N\n");
-        // Precool NOT emitted here — PreCoolingInjector handles it in PostProcessor
+        // BBS L3425-3428: precool departing hotend + fan on inside barrier
+        // Use m_physical_extruder_map for heater index (matches format_line_M104 in add_M104_by_requirement)
+        if (m_filpar[m_current_tool].precool_target_temp.second != 0) {
+            int logical_ext = m_filament_map.empty() ? 0 : m_filament_map[m_current_tool] - 1;
+            int phys_ext = (logical_ext >= 0 && logical_ext < (int)m_physical_extruder_map.size())
+                             ? m_physical_extruder_map[logical_ext] : logical_ext;
+            writer.append("M400\n");
+            writer.append("M104 T" + std::to_string(phys_ext) + " S" +
+                          std::to_string(m_filpar[m_current_tool].precool_target_temp.second) + " N0\n");
+            writer.append("M106 S255\n");
+        }
         writer.append("M633\n");
     }
 
@@ -3089,9 +3167,42 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
     block->last_nozzle_change_id = old_filament_id;
 
     NozzleChangeResult result;
-    if (is_tpu_filament(m_current_tool)) {
+    // Vortek H2C: re-arm carousel barrier + reverse travel (BBS ramming() L3493-3535)
+    if (!extruder_change && m_is_multiple_nozzle) {
+        writer.append("M632 S" + std::to_string(new_filament_id) + " M N\n");
+    }
+
+    if (is_need_reverse_travel(m_current_tool, extruder_change)) {
+        // BBS L3499-3526: reverse travel without extrusion back through ramming zone
         bool   left_to_right     = !m_left_to_right;
-        int  tpu_line_count = (real_nozzle_change_line_count + 2 - 1) / 2; // nozzle_change_line_count / 2 round up
+        int    tpu_line_count    = real_nozzle_change_line_count;
+        float  reverse_speed     = nozzle_change_speed * 2; // BBS L3502
+        float  rt_time           = extruder_change ? m_filpar[m_current_tool].ramming_travel_time.first
+                                                   : m_filpar[m_current_tool].ramming_travel_time.second;
+        float  need_reverse_travel_dis = rt_time * reverse_speed / 60.f;
+        float  real_travel_dis         = tpu_line_count * (xr - xl - 2 * m_perimeter_width);
+        if (real_travel_dis < need_reverse_travel_dis)
+            reverse_speed *= real_travel_dis / need_reverse_travel_dis;
+        writer.travel(writer.x(), writer.y() + dy/2);
+
+        for (int i = 0; true; ++i) {
+            need_reverse_travel_dis -= (xr - xl - 2 * m_perimeter_width);
+            float offset_dis = 0.f;
+            if (need_reverse_travel_dis < 0)
+                offset_dis = -need_reverse_travel_dis;
+            if (left_to_right)
+                writer.travel(xr - m_perimeter_width - offset_dis, writer.y(), reverse_speed);
+            else
+                writer.travel(xl + m_perimeter_width + offset_dis, writer.y(), reverse_speed);
+            if (need_reverse_travel_dis < EPSILON) break;
+            if (i == tpu_line_count - 1)
+                break;
+            writer.travel(writer.x(), writer.y() - dy);
+            left_to_right = !left_to_right;
+        }
+    } else if (is_tpu_filament(m_current_tool)) {
+        bool   left_to_right     = !m_left_to_right;
+        int  tpu_line_count = (real_nozzle_change_line_count + 2 - 1) / 2;
         nozzle_change_speed *= 2;
         writer.travel(writer.x(), writer.y() - m_nozzle_change_perimeter_width);
 
@@ -3116,11 +3227,7 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
         }
     }
 
-    // Vortek H2C: re-arm carousel barrier after ramming (BBS ramming() L3493-3497, L3535)
-    if (!extruder_change && m_is_multiple_nozzle) {
-        writer.append("M632 S" + std::to_string(new_filament_id) + " M N\n");
-        writer.append("M633\n");
-    }
+    if (!extruder_change && m_is_multiple_nozzle) writer.append("M633\n");
 
     writer.append(format_nozzle_change_tag(false, old_filament_id, new_filament_id));
 
@@ -3550,38 +3657,32 @@ void WipeTower::toolchange_wipe_new(WipeTowerWriter &writer, const box_coordinat
     // Emit the arriving-hotend pre-heat inside the M632/M633 nozzle-change barrier. `M632 S<tool>[ H<nozzle>]
     // M N` opens the barrier (M = firmware nozzle-change flag, N = slicer generated), the M104 sets the
     // arriving hotend temp, and `M633` closes it. H2C's grouping is static (no dynamic nozzle map), so the
-    // H<nozzle> field is omitted (a dynamic nozzle map would supply a real nozzle id, a static map -1 => no
+    // H<nozzle> field is omitted (a dynamic nozzle map would supply a real nozzle id, a static map -1 =>no
     // H). The counterproductive fan-on (M106 S255) used for departing-tool cooldown is intentionally
     // omitted, since this is a pre-HEAT of the arriving tool. The whole helper is only ever called from
     // add_M104_by_requirement, which is gated on m_is_multiple_nozzle (extruder_max_nozzle_count>1) => H2C
-    // only; every other printer's wipe tower is untouched. The M632 M-flag is itself a firmware barrier, so
-    // a preceding M400 wait is subsumed.
+    // only; every other printer's wipe tower is untouched.
+    // BBS: extruder change preheat uses M400 + M104 WITHOUT M632/M633 barrier.
+    // M632 barriers are only for carousel nozzle changes (emitted in nozzle_change_new/ramming).
     auto format_line_M104 = [this](int target_temp, int target_extruder = -1, bool wait_for_moves = true, const std::string &comment = "") {
         std::string buffer;
-        buffer += "M632 S" + std::to_string(m_current_tool) + " M N\n";
+        if (wait_for_moves)
+            buffer += "M400\n";
         buffer += "M104";
         if (target_extruder != -1 && target_extruder < (int) m_physical_extruder_map.size())
             buffer += (" T" + std::to_string(m_physical_extruder_map[target_extruder]));
         buffer += " S" + std::to_string(target_temp) + " N0"; // N0 means the gcode is generated by the slicer
         if (!comment.empty()) buffer += " ;" + comment;
         buffer += '\n';
-        buffer += "M633\n";
-        (void) wait_for_moves; // the M632 M-flag barrier replaces the former M400 wait
         return buffer;
     };
-    // Suppress the pre-heat M104 on the first layer and on solid (contact) toolchanges (should_heating).
-    // m_is_multiple_nozzle folds in the H2C gate so single-nozzle output is untouched.
-    // Orca: the arriving extruder id is resolved as m_filament_map[tool]-1 (layer-static) because Orca's
-    // wipe tower is extruder-level rather than tracking a per-layer nozzle map.
+    // Matches BBS: toolchange_wipe_new L4039 — add_M104_by_requirement fires for BOTH carousel and extruder changes.
+    // m_is_multiple_nozzle gate needed because Orca calls toolchange_wipe_new for ALL printers (BBS has it H2C-only).
     bool should_heating = m_is_multiple_nozzle && m_filpar[m_current_tool].filament_cooling_before_tower > EPSILON &&
                           !solid_tool_toolchange && !is_first_layer();
     auto add_M104_by_requirement = [&writer, &format_line_M104, &should_heating, this]() {
         if (m_filpar[m_current_tool].filament_cooling_before_tower < EPSILON) return;
         if (!should_heating) return;
-        // Vortek H2C: skip for carousel — M632+M633 already emitted inside nozzle_change_new()
-        // For extruder change (!is_extruder_change = carousel), M632 already inside
-        // Reference to BBS: BBS ramming() L3421 — M632 only for !extruder_change; result.is_extruder_change L3544
-        if (!m_nozzle_change_result.is_extruder_change) return;
         float target_temp = is_first_layer() ? m_filpar[m_current_tool].nozzle_temperature_initial_layer : m_filpar[m_current_tool].nozzle_temperature;
         writer.append(format_line_M104(target_temp, m_filament_map[m_current_tool] - 1));
     };
