@@ -171,15 +171,49 @@ def build_timeline_and_interpolate(track, tool_changes, m73_points, total_lines,
         # Physical dist/speed ignores acceleration/deceleration, giving an
         # underestimated total (e.g. 29 min vs real 48 min).  M73 from the
         # trapezoid planner accounts for accel/decel and is closer to reality.
-        # We keep the physical DISTRIBUTION (proportions) but scale the X-axis
-        # so total time matches M73.
+        # We scale only the G1 motion component; M400 delays are physical
+        # waits and must not be inflated.
         if m73_points and total_duration > 0:
-            m73_total_sec = max(p[1] for p in m73_points) * 60  # max R value → seconds
-            if m73_total_sec > total_duration:
-                scale = m73_total_sec / total_duration
-                for j in range(len(cumulative)):
-                    cumulative[j] *= scale
-                total_duration *= scale
+            m73_total_sec = max(p[1] for p in m73_points) * 60
+
+            # Compute total M400 delay time
+            m400_total = 0.0
+            for raw in gcode_lines:
+                gl = raw.strip()
+                ms = _re.match(r'^M400\s+S([\d.]+)', gl)
+                mp = _re.match(r'^M400\s+P([\d.]+)', gl)
+                if ms:
+                    m400_total += float(ms.group(1))
+                elif mp:
+                    m400_total += float(mp.group(1)) / 1000.0
+
+            g1_time = total_duration - m400_total
+            m73_g1_time = m73_total_sec - m400_total
+
+            if g1_time > 0 and m73_g1_time > g1_time:
+                scale = m73_g1_time / g1_time
+                # Re-scale: for each line, separate M400-contributed time
+                # from G1-contributed time, scale only G1 part.
+                # Since M400 delays are sparse and cumulative is monotonic,
+                # we rebuild by scaling the G1 increments.
+                m400_lines = set()
+                for i, raw in enumerate(gcode_lines):
+                    gl = raw.strip()
+                    if _re.match(r'^M400\s+[SP]', gl):
+                        m400_lines.add(i + 1)  # 1-indexed
+
+                prev = 0.0
+                new_t = 0.0
+                for j in range(1, len(cumulative)):
+                    delta = cumulative[j] - prev
+                    prev = cumulative[j]
+                    if j in m400_lines:
+                        new_t += delta  # M400: no scale
+                    else:
+                        new_t += delta * scale  # G1: scale
+                    cumulative[j] = new_t
+
+                total_duration = cumulative[-1]
 
         def get_time(line):
             idx = max(1, min(int(round(line)), len(cumulative) - 1))
@@ -435,6 +469,29 @@ def parse_file_data(filepath):
                     "target_temp": ev["preheat_temp"],
                     "nozzle_num": ev["nozzle_num"]
                 })
+
+        # Convert precool (cooldown) lines to time (seconds)
+        # Precool = M104 S<low_temp> on the DEPARTING nozzle before tool change
+        # Filter: skip S0 (heater off), negative durations, and very short zones (<2s)
+        precools = []
+        for ev in raw_preheats:
+            if ev.get("cooldown_line") is not None and ev["tc_line"] is not None and ev.get("cooldown_temp") is not None:
+                if ev["cooldown_temp"] <= 0:  # S0 = heater off, not a real precool
+                    continue
+                start_t = get_time(ev["cooldown_line"])
+                end_t = get_time(ev["tc_line"])
+                dur = end_t - start_t
+                if dur < 2.0:  # Too short or negative — not a visible precool zone
+                    continue
+                # source_ext = the extruder that is LEAVING (opposite of target_ext)
+                source_heater = 1 - ev["target_ext"] if ev["target_ext"] in (0, 1) else 0
+                precools.append({
+                    "start_time": start_t,
+                    "end_time": end_t,
+                    "heater": source_heater,
+                    "target_temp": ev["cooldown_temp"],
+                    "nozzle_num": ev.get("nozzle_num", -1)
+                })
         
         heater_to_ext = determine_heater_to_extruder(track, extruder_map)
         
@@ -522,6 +579,7 @@ def parse_file_data(filepath):
             "heater_to_ext": heater_to_ext,
             "tool_changes": tool_changes,
             "preheats": preheats,
+            "precools": precools,
             "preheat_count": len(preheats),
             "cooldown_count": cooldown_count,
             "tc_zones": tc_zones,
@@ -927,9 +985,32 @@ function draw() {
                     const left = Math.max(marginLeft, xStart);
                     const right = Math.min(marginLeft + visibleWidth, xEnd);
                     if (left < right) {
-                        ctx.fillStyle = "rgba(245, 158, 11, 0.12)";
+                        ctx.fillStyle = "rgba(220, 38, 38, 0.15)";
                         ctx.fillRect(left, p.yStart, right - left, pH);
-                        ctx.strokeStyle = "rgba(245, 158, 11, 0.35)";
+                        ctx.strokeStyle = "rgba(220, 38, 38, 0.45)";
+                        ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+                        ctx.beginPath();
+                        if (xStart >= marginLeft && xStart <= marginLeft + visibleWidth) {
+                            ctx.moveTo(xStart, p.yStart); ctx.lineTo(xStart, p.yStart + pH);
+                        }
+                        ctx.stroke(); ctx.setLineDash([]);
+                    }
+                }
+            });
+        }
+
+        // Precool (cooldown) regions (only on main panels)
+        if (!isNozzle && p.file.precools) {
+            p.file.precools.forEach(pc => {
+                if (pc.heater === p.heater) {
+                    const xStart = scaleX(pc.start_time);
+                    const xEnd = scaleX(pc.end_time);
+                    const left = Math.max(marginLeft, xStart);
+                    const right = Math.min(marginLeft + visibleWidth, xEnd);
+                    if (left < right) {
+                        ctx.fillStyle = "rgba(132, 204, 22, 0.15)";
+                        ctx.fillRect(left, p.yStart, right - left, pH);
+                        ctx.strokeStyle = "rgba(132, 204, 22, 0.45)";
                         ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
                         ctx.beginPath();
                         if (xStart >= marginLeft && xStart <= marginLeft + visibleWidth) {
@@ -1220,8 +1301,11 @@ function drawLegend(visibleWidth) {
     ctx.beginPath(); ctx.moveTo(lx, y-5); ctx.lineTo(lx+18, y-5); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle = "#a1a1aa"; ctx.fillText("Standby / Cooldown", lx+24, y-1); y += 14;
     // Preheat zone
-    ctx.fillStyle = "rgba(245, 158, 11, 0.25)"; ctx.fillRect(lx, y-8, 12, 6);
+    ctx.fillStyle = "rgba(220, 38, 38, 0.35)"; ctx.fillRect(lx, y-8, 12, 6);
     ctx.fillStyle = "#a1a1aa"; ctx.fillText("Preheat zone", lx+20, y-1); y += 14;
+    // Precool zone
+    ctx.fillStyle = "rgba(132, 204, 22, 0.35)"; ctx.fillRect(lx, y-8, 12, 6);
+    ctx.fillStyle = "#a1a1aa"; ctx.fillText("Precool zone", lx+20, y-1); y += 14;
     // TC zone
     ctx.fillStyle = "rgba(147, 51, 234, 0.35)"; ctx.fillRect(lx, y-8, 12, 6);
     ctx.fillStyle = "#a1a1aa"; ctx.fillText("Toolchange", lx+20, y-1); y += 14;
@@ -1269,10 +1353,20 @@ function drawTooltips(scaleX, scaleY, visibleWidth, plotW) {
             );
         }
         if (ph) {
-            const isActive = tips.some(t => t.panel === hoveredPanel && t.type === "active");
-            if (!isActive) {
-                tips.push({ panel: hoveredPanel, type: "preheat", info: ph });
-            }
+            tips.push({ panel: hoveredPanel, type: "preheat", info: ph });
+        }
+
+        // 2b. Precool (cooldown) region tooltip
+        let pc = null;
+        if (fd.precools) {
+            pc = fd.precools.find(h => 
+                h.heater === hoveredPanel.heater && 
+                timeNum >= h.start_time && 
+                timeNum <= h.end_time
+            );
+        }
+        if (pc) {
+            tips.push({ panel: hoveredPanel, type: "precool", info: pc });
         }
 
         // 3. TC zone tooltip
@@ -1293,10 +1387,8 @@ function drawTooltips(scaleX, scaleY, visibleWidth, plotW) {
     let totalHeight = 0;
     const gap = 8;
     tips.forEach(item => {
-        if (item.type === "tc_zone" || item.type === "wipe_zone") {
+        if (item.type === "tc_zone" || item.type === "wipe_zone" || item.type === "preheat" || item.type === "precool") {
             totalHeight += 20 + gap;
-        } else if (item.type === "preheat") {
-            totalHeight += 22 + gap;
         } else {
             totalHeight += 108 + gap;
         }
@@ -1318,14 +1410,20 @@ function drawTooltips(scaleX, scaleY, visibleWidth, plotW) {
     tips.forEach(item => {
         const p = item.panel;
 
-        if (item.type === "tc_zone" || item.type === "wipe_zone") {
-            const isTc = item.type === "tc_zone";
-            const label = isTc ? "🔧 Toolchange" : "🏗️ Wipe Tower";
-            const color = isTc ? "rgba(147, 51, 234, 0.9)" : "rgba(6, 182, 212, 0.9)";
-            const ttW = isTc ? 100 : 95, ttH = 20;
-            // Center smaller tooltips within the horizontal block
+        if (item.type === "tc_zone" || item.type === "wipe_zone" || item.type === "preheat" || item.type === "precool") {
+            let label, color, ttW;
+            if (item.type === "tc_zone") {
+                label = "🔧 Toolchange"; color = "rgba(147, 51, 234, 0.9)"; ttW = 100;
+            } else if (item.type === "wipe_zone") {
+                label = "🏗️ Wipe Tower"; color = "rgba(6, 182, 212, 0.9)"; ttW = 95;
+            } else if (item.type === "preheat") {
+                label = "🔥 Pheat " + item.info.target_temp + "°C"; color = "rgba(220, 38, 38, 0.9)"; ttW = 115;
+            } else {
+                label = "❄️ Pcool " + item.info.target_temp + "°C"; color = "rgba(132, 204, 22, 0.9)"; ttW = 115;
+            }
+            const ttH = 20;
             let itemX = ttX;
-            if (ttX < mouseX) { // aligned left
+            if (ttX < mouseX) {
                 itemX = mouseX - ttW - 15;
             }
             ctx.fillStyle = "rgba(17,17,19,0.9)";
@@ -1334,30 +1432,6 @@ function drawTooltips(scaleX, scaleY, visibleWidth, plotW) {
             ctx.textAlign = "center";
             ctx.fillStyle = "#ffffff"; ctx.font = "bold 9px system-ui";
             ctx.fillText(label, itemX + ttW/2, currentY + 14);
-            currentY += ttH + gap;
-        }
-        else if (item.type === "preheat") {
-            const ph = item.info;
-            const state = getClosestState(p.file.track, timeNum);
-            const temp = p.heater === 0 ? state.t0 : state.t1;
-            const pH = p.height;
-            const yPos = scaleY(temp, p.yStart, pH);
-
-            const ttW = 75, ttH = 22;
-            let itemX = ttX;
-            if (ttX < mouseX) { // aligned left
-                itemX = mouseX - ttW - 15;
-            }
-            
-            ctx.fillStyle = "rgba(17,17,19,0.95)";
-            ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = 1.5;
-            ctx.beginPath(); ctx.roundRect(itemX, currentY, ttW, ttH, 4); ctx.fill(); ctx.stroke();
-            
-            ctx.textAlign = "center";
-            ctx.fillStyle = "#ffffff"; ctx.font = "bold 10px system-ui, sans-serif";
-            ctx.fillText(fmtTool(ph.nozzle_num) + ": " + temp + "°C", itemX + ttW/2, currentY + 15);
-            
-            ctx.fillStyle = "#f59e0b"; ctx.beginPath(); ctx.arc(mouseX, yPos, 4, 0, Math.PI*2); ctx.fill();
             currentY += ttH + gap;
         } else {
             const state = item.state;
