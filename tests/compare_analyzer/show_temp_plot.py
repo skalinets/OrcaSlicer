@@ -104,11 +104,82 @@ def determine_heater_to_extruder(track, extruder_map):
     return {1: 1, 2: 0}
 
 
-def build_timeline_and_interpolate(track, tool_changes, m73_points, total_lines, m400_weights=None):
+def build_timeline_and_interpolate(track, tool_changes, m73_points, total_lines, m400_weights=None,
+                                    gcode_lines=None):
+    """Build a line→time mapping from physical G1 motion time estimation.
+
+    When *gcode_lines* is provided (list of raw gcode strings, 0-indexed),
+    the timeline is computed from actual feedrates + M400 delays, giving a
+    physically accurate time axis independent of M73 granularity.
+    Falls back to M73 interpolation when gcode_lines is not available.
+    """
+    import re as _re
+    import math as _math
+
     if m400_weights is None:
         m400_weights = {}
+
+    # ── Physical timeline from G1 moves ──────────────────────────────────
+    if gcode_lines is not None:
+        cumulative = [0.0] * (len(gcode_lines) + 2)  # 1-indexed
+        cur_x, cur_y, cur_z = 0.0, 0.0, 0.0
+        cur_f = 1800.0  # mm/min default
+        t = 0.0
+
+        for i, raw in enumerate(gcode_lines):
+            line_num = i + 1
+            gl = raw.strip()
+
+            # M400 S/P delays
+            ms = _re.match(r'^M400\s+S([\d.]+)', gl)
+            mp = _re.match(r'^M400\s+P([\d.]+)', gl)
+            if ms:
+                t += float(ms.group(1))
+            elif mp:
+                t += float(mp.group(1)) / 1000.0
+
+            # G1 moves
+            if gl.startswith('G1 '):
+                fm = _re.search(r'F([\d.]+)', gl)
+                if fm:
+                    cur_f = float(fm.group(1))
+
+                xm = _re.search(r'X([-\d.]+)', gl)
+                ym = _re.search(r'Y([-\d.]+)', gl)
+                zm = _re.search(r'Z([-\d.]+)', gl)
+
+                nx = float(xm.group(1)) if xm else cur_x
+                ny = float(ym.group(1)) if ym else cur_y
+                nz = float(zm.group(1)) if zm else cur_z
+
+                dist = _math.sqrt((nx - cur_x)**2 + (ny - cur_y)**2 + (nz - cur_z)**2)
+                if dist > 0.001 and cur_f > 0:
+                    t += dist / (cur_f / 60.0)  # F is mm/min → mm/s
+
+                cur_x, cur_y, cur_z = nx, ny, nz
+
+            if line_num < len(cumulative):
+                cumulative[line_num] = t
+
+        # Fill any remaining slots
+        for j in range(line_num + 1, len(cumulative)):
+            cumulative[j] = t
+
+        total_duration = t
+
+        def get_time(line):
+            idx = max(1, min(int(round(line)), len(cumulative) - 1))
+            return cumulative[idx]
+
+        for tr in track:
+            tr["time"] = get_time(tr["line"])
+        for tc in tool_changes:
+            tc["time"] = get_time(tc["line"])
+
+        return total_duration, get_time
+
+    # ── Fallback: M73-based interpolation (original logic) ───────────────
     m73_points = sorted(list(set([(p[0], p[1]) for p in m73_points])))
-    # Filter to only keep the first occurrence of each unique remaining time value
     filtered_m73 = []
     seen_times = set()
     for line, r_val in m73_points:
@@ -134,9 +205,7 @@ def build_timeline_and_interpolate(track, tool_changes, m73_points, total_lines,
 
     line_to_time = {}
     # Build continuous M620 ranges from sparse track samples.
-    # track samples only cover lines with temp events; lines between samples
-    # (hundreds of G1 moves inside M620→M621 blocks) need weight=500 too.
-    m620_ranges = []  # list of (start_line, end_line) inclusive
+    m620_ranges = []
     m620_start = None
     for t in track:
         if t.get("in_m620", False):
@@ -222,6 +291,7 @@ def parse_file_data(filepath):
 
             # Find the start of machine end gcode to cut off non-printing trailing commands (e.g. air filtration wait)
             end_gcode_line = total_lines
+            raw_gcode_lines = None
             for name in z.namelist():
                 if name.endswith('.gcode'):
                     gcode_text = z.read(name).decode('utf-8', errors='replace')
@@ -233,6 +303,7 @@ def parse_file_data(filepath):
                             if 'MACHINE_END_GCODE_START' in gl or 'filament end gcode' in gl or 'machine: H2C end' in gl:
                                 end_gcode_line = line_num
                                 break
+                    raw_gcode_lines = gcode_lines
                     break
 
             # Keep end_gcode_line but do not trim data arrays to preserve full time duration
@@ -333,7 +404,8 @@ def parse_file_data(filepath):
                     "desc": desc,
                 })
 
-        total_duration, get_time = build_timeline_and_interpolate(track, tool_changes, m73_points, total_lines, m400_weights)
+        total_duration, get_time = build_timeline_and_interpolate(track, tool_changes, m73_points, total_lines, m400_weights,
+                                                                    gcode_lines=raw_gcode_lines)
         end_gcode_time = get_time(end_gcode_line)
         
         # Convert preheat lines to time (seconds)
