@@ -1091,7 +1091,15 @@ namespace Slic3r
             if (layer + 1 < layer_filaments.size()) next_lf = layer_filaments[layer + 1];
             std::vector<unsigned int> filament_used_next_layer = collect_filaments_in_groups<unsigned int>(filament_sets, next_lf);
 
-            bool                      use_forcast = false;
+            // Enable inter-layer forecast: when choosing filament ordering for current layer,
+            // also consider next layer's filament set to minimize inter-layer transition flush.
+            // solve_extruder_order_with_forcast() tries all permutations of curr+next layer
+            // and picks the ordering that minimizes total flush across both layers.
+            // This avoids expensive inter-layer transitions (e.g. ending layer with F2 when
+            // next layer starts with F3, costing flush[F2→F3], instead of ending with F3
+            // which gives flush[F3→F3]=0). Limited to ≤5 filaments due to O(N!×M!) complexity.
+            // Matches the multi-extruder path behavior (ToolOrderUtils.cpp:1227).
+            bool                      use_forcast = (filament_used.size() <= max_n_with_forcast && filament_used_next_layer.size() <= max_n_with_forcast);
             float                     tmp_cost = 0;
             std::vector<unsigned int> sequence;
             uint128_t                 hash_key = filament_list_to_hash_key(filament_used, filament_used_next_layer, curr_filament_id, use_forcast);
