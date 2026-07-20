@@ -58,7 +58,6 @@ public:
 		Vec2f origin_start_pos;  // not rotated
 
         std::vector<Vec2f> wipe_path;
-        // Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.hpp NozzleChangeResult::is_extruder_change
         bool is_extruder_change{true};
     };
 
@@ -312,7 +311,6 @@ public:
 
 	void set_filament_map(const std::vector<int> &filament_map) { m_filament_map = filament_map; }
 	// Vortek H2C: filament_id → physical nozzle_id for carousel rotation detection
-	// Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.hpp set_nozzle_group_result()
 	void set_filament_nozzle_map(const std::vector<int> &nozzle_map) { m_filament_nozzle_map = nozzle_map; }
 
 	void set_has_tpu_filament(bool has_tpu) { m_has_tpu_filament = has_tpu; }
@@ -361,8 +359,6 @@ public:
         // Distance (in mm of filament) that a hotend is allowed to pre-cool before the
         // tower is reached; drives the prime-tower heating-during-wipe model (multi-nozzle only).
         float               filament_cooling_before_tower = 0.f;
-        // Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.hpp L335-339
-        // Carousel-specific ramming, precool, and reverse travel parameters.
         // .first = extruder change, .second = nozzle change (carousel)
         std::pair<float,float>  max_e_ramming_speed{0.f, 0.f};
         std::pair<float,float>  ramming_travel_time{0.f, 0.f};
@@ -409,7 +405,6 @@ public:
 	int get_filament_category(int filament_id);
 	bool is_in_same_extruder(int filament_id_1, int filament_id_2);
 	// Vortek H2C: format BBS-compatible NOZZLE_CHANGE_START/END tag with OF/NF/ON/NN payload
-	// Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp format_nozzle_change_line()
 	std::string format_nozzle_change_tag(bool start, int old_filament_id, int new_filament_id) const;
 	void reset_block_status();
     int get_wall_filament_for_all_layer();
@@ -572,7 +567,6 @@ private:
 
 	bool is_tpu_filament(int filament_id) const;
 	bool is_petg_filament(int filament_id) const;
-    // Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp L3080-3085
     bool is_need_reverse_travel(int filament_id, bool extruder_change) const;
 
 	// BBS

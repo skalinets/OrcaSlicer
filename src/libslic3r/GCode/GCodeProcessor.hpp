@@ -1109,14 +1109,9 @@ class Print;
         std::vector<ExtruderPreHeating::ExtruderUsageBlcok>  m_extruder_blocks;
         unsigned int m_machine_start_gcode_end_line_id{ (unsigned int) (-1) };
         unsigned int m_machine_end_gcode_start_line_id{ (unsigned int) (-1) };
-        // End gcode M400 delays (air purification, timelapse, sound) are post-print
-        // by definition. M73 should report print completion time, not post-print time.
-        // m_skip_end_gcode_delays is set when MACHINE_END_GCODE_START tag is encountered
-        // during the streaming parse (process_tags), telling process_M400 to skip timed
-        // delays in the end gcode scope.
-        // Reference to BBS: BambuStudio/src/libslic3r/GCode/GCodeProcessor.cpp —
-        // BBS drops leftover in calculate_time(is_final=true), achieving the same effect.
-        bool m_support_air_filtration{ false };
+        // Set when the MACHINE_END_GCODE_START tag is seen during the streaming parse; tells
+        // process_M400 to skip post-print end-gcode dwells (air purification, timelapse, sound)
+        // so they don't inflate the M73 estimate. BBS excludes them in calculate_time(is_final).
         bool m_skip_end_gcode_delays{ false };
         // Tracks, during the stream, which filament sits in each physical nozzle and which nozzle each
         // extruder currently carries. Written by both branches of the two-arg process_filament_change

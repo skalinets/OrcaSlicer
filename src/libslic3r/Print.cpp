@@ -4018,7 +4018,6 @@ void Print::_make_wipe_tower()
         wipe_tower.set_has_tpu_filament(this->has_tpu_filament());
         wipe_tower.set_filament_map(this->get_filament_maps());
         // Vortek H2C: pass nozzle-level map for carousel rotation detection in tool_change_new()
-        // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.hpp set_nozzle_group_result()
         wipe_tower.set_filament_nozzle_map(this->get_filament_nozzle_maps());
         // Feed the has_filament_switcher device flag (develop-only dynamic key, read defensively from
         // the full config — no shipping profile sets it) and the shared printable bed used by the PETG
@@ -4055,12 +4054,14 @@ void Print::_make_wipe_tower()
             multi_extruder_flush.emplace_back(wipe_volumes);
         }
 
-        // Reference to BBS: BambuStudio/src/libslic3r/Print.cpp _make_wipe_tower()
         // Use NozzleStatusRecorder for per-carousel-slot tracking (BBS pattern).
         // The original Orca code tracked per-extruder (2 slots), which collapsed all
         // carousel filaments into one slot and caused massive redundant AMS flushing.
         auto group_result = get_layered_nozzle_group_result();
         MultiNozzleUtils::NozzleStatusRecorder nozzle_recorder;
+        // Fallback (group_result == null) per-physical-nozzle tracking, matching the original
+        // pre-port behavior: remembers the last filament loaded in each physical nozzle slot.
+        std::vector<unsigned int> nozzle_cur_filament_ids(nozzle_nums, (unsigned int) -1);
 
         std::vector<int>filament_maps = get_filament_maps();
         int layer_idx = -1;
@@ -4071,6 +4072,9 @@ void Print::_make_wipe_tower()
             auto nozzle = group_result->get_nozzle_for_filament(current_filament_id, layer_idx);
             if (nozzle)
                 nozzle_recorder.set_nozzle_status(nozzle->group_id, current_filament_id, nozzle->extruder_id);
+        } else {
+            size_t cur_nozzle_id = filament_maps[current_filament_id] - 1;
+            nozzle_cur_filament_ids[cur_nozzle_id] = current_filament_id;
         }
 
         for (auto& layer_tools : m_wipe_tower_data.tool_ordering.layer_tools()) { // for all layers
@@ -4088,7 +4092,6 @@ void Print::_make_wipe_tower()
 
                 float volume_to_purge = 0;
 
-                // Reference to BBS: BambuStudio/src/libslic3r/Print.cpp L3361-3392
                 // Per-carousel-slot purge tracking via NozzleStatusRecorder
                 if (group_result) {
                     auto nozzle_info = group_result->get_nozzle_for_filament(filament_id, layer_idx);
@@ -4111,15 +4114,21 @@ void Print::_make_wipe_tower()
                         nozzle_recorder.set_nozzle_status(nozzle_id, filament_id, extruder_id);
                     }
                 } else {
-                    // Fallback: original Orca per-extruder path (non-carousel printers)
+                    // Fallback: original Orca per-physical-nozzle path (non-carousel printers).
+                    // Flush source is the last filament that occupied THIS nozzle, guarded so the
+                    // first use of a nozzle incurs no flush.
                     int nozzle_id = filament_maps[filament_id] - 1;
-                    volume_to_purge = multi_extruder_flush[nozzle_id][current_filament_id][filament_id];
-                    float flush_multiplier = (m_config.prime_volume_mode == PrimeVolumeMode::pvmFast)
-                        ? m_config.flush_multiplier_fast.get_at(nozzle_id)
-                        : m_config.flush_multiplier.get_at(nozzle_id);
-                    volume_to_purge *= flush_multiplier;
-                    volume_to_purge = layer_tools.wiping_extrusions().mark_wiping_extrusions(
-                        *this, current_filament_id, filament_id, volume_to_purge);
+                    unsigned int pre_filament_id = nozzle_cur_filament_ids[nozzle_id];
+                    if (pre_filament_id != (unsigned int) -1 && pre_filament_id != filament_id) {
+                        volume_to_purge = multi_extruder_flush[nozzle_id][pre_filament_id][filament_id];
+                        float flush_multiplier = (m_config.prime_volume_mode == PrimeVolumeMode::pvmFast)
+                            ? m_config.flush_multiplier_fast.get_at(nozzle_id)
+                            : m_config.flush_multiplier.get_at(nozzle_id);
+                        volume_to_purge *= flush_multiplier;
+                        volume_to_purge = layer_tools.wiping_extrusions().mark_wiping_extrusions(
+                            *this, current_filament_id, filament_id, volume_to_purge);
+                    }
+                    nozzle_cur_filament_ids[nozzle_id] = filament_id;
                 }
 
                 //During the filament change, the extruder will extrude an extra length of grab_length for the corresponding detection, so the purge can reduce this length.
@@ -4127,10 +4136,8 @@ void Print::_make_wipe_tower()
                 float grab_purge_volume = m_config.grab_length.get_at(grab_extruder_id) * 2.4; //(diameter/2)^2*PI=2.4
                 volume_to_purge = std::max(0.f, volume_to_purge - grab_purge_volume);
 
-                // Reference to BBS: BambuStudio/src/libslic3r/Print.cpp L3381-3387
                 // Select prime volume per-filament: nozzle change (carousel rotation) uses
                 // filament_prime_volume_nc, filament change (same nozzle slot) uses filament_prime_volume.
-                // BBS passes both to plan_toolchange (7 args), we select the right one here (6 args).
                 float wipe_volume_ec = filament_id < m_config.filament_prime_volume.values.size()
                     ? m_config.filament_prime_volume.values[filament_id]
                     : (float) m_config.prime_volume;

@@ -1610,27 +1610,31 @@ void WipeTower::set_extruder(size_t idx, const PrintConfig& config)
         m_filpar[idx].max_e_speed = (max_vol_speed / filament_area());
 
     // Vortek H2C: carousel-specific ramming, precool, and reverse travel parameters
-    // Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp L1878-1932
     {
         // Ramming speed: .first = extruder change, .second = nozzle change (carousel)
-        float ramming_vol_speed = float(config.filament_max_volumetric_speed.get_at(idx));
-        if (config.filament_max_volumetric_speed.is_nil(idx) || ramming_vol_speed < EPSILON)
+        // Use the dedicated ramming volumetric speed, falling back to max_vol_speed only when
+        // the setting is nil/-1.
+        float ramming_vol_speed = float(config.filament_ramming_volumetric_speed.get_at(idx));
+        if (config.filament_ramming_volumetric_speed.is_nil(idx) || is_approx(config.filament_ramming_volumetric_speed.get_at(idx), -1.))
             ramming_vol_speed = max_vol_speed;
         m_filpar[idx].max_e_ramming_speed.first = (ramming_vol_speed / filament_area());
 
-        float ramming_vol_speed_nc = ramming_vol_speed; // default: same as extruder change
-        if (!config.filament_ramming_volumetric_speed_nc.is_nil(idx)
-            && !is_approx(config.filament_ramming_volumetric_speed_nc.get_at(idx), -1.))
-            ramming_vol_speed_nc = float(config.filament_ramming_volumetric_speed_nc.get_at(idx));
+        float ramming_vol_speed_nc = float(config.filament_ramming_volumetric_speed_nc.get_at(idx));
+        if (config.filament_ramming_volumetric_speed_nc.is_nil(idx) || is_approx(config.filament_ramming_volumetric_speed_nc.get_at(idx), -1.))
+            ramming_vol_speed_nc = max_vol_speed;
         m_filpar[idx].max_e_ramming_speed.second = (ramming_vol_speed_nc / filament_area());
     }
     {
         // Precool target temp: .first = extruder change, .second = nozzle change (carousel)
+        // Precool is only active when enable_pre_heating is on; otherwise no precool temp/timing is
+        // applied and the downstream precool_t stays 0, matching printers with pre-heating disabled.
         m_filpar[idx].precool_target_temp = {0, 0};
-        if (!config.filament_pre_cooling_temperature.is_nil(idx))
-            m_filpar[idx].precool_target_temp.first = config.filament_pre_cooling_temperature.get_at(idx);
-        if (!config.filament_pre_cooling_temperature_nc.is_nil(idx))
-            m_filpar[idx].precool_target_temp.second = config.filament_pre_cooling_temperature_nc.get_at(idx);
+        if (config.enable_pre_heating.value) {
+            if (!config.filament_pre_cooling_temperature.is_nil(idx) && config.filament_pre_cooling_temperature.get_at(idx) != 0)
+                m_filpar[idx].precool_target_temp.first = config.filament_pre_cooling_temperature.get_at(idx);
+            if (!config.filament_pre_cooling_temperature_nc.is_nil(idx) && config.filament_pre_cooling_temperature_nc.get_at(idx) != 0)
+                m_filpar[idx].precool_target_temp.second = config.filament_pre_cooling_temperature_nc.get_at(idx);
+        }
     }
     {
         // Precool timing: (nozzle_temp - precool_temp) / hotend_cooling_rate
@@ -2600,8 +2604,6 @@ void WipeTower::plan_toolchange(float z_par, float layer_height_par, unsigned in
             nozzle_change_depth = nozzle_change_line_count * m_nozzle_change_perimeter_width;
         depth += nozzle_change_depth;
     }
-    // Vortek H2C override: carousel rotation (same extruder, different nozzle) also needs ramming depth
-    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp plan_toolchange() L2862 is_need_ramming()
     if (nozzle_change_depth == 0
         && !m_filament_nozzle_map.empty()
         && old_tool < m_filament_nozzle_map.size() && new_tool < m_filament_nozzle_map.size()
@@ -2764,7 +2766,6 @@ bool WipeTower::is_petg_filament(int filament_id) const
     return m_filpar[filament_id].material == "PETG";
 }
 
-// Matches BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp L3080-3085
 bool WipeTower::is_need_reverse_travel(int filament_id, bool extruder_change) const
 {
     if (extruder_change)
@@ -2896,11 +2897,6 @@ WipeTower::ToolChangeResult WipeTower::tool_change_new(size_t new_tool, bool sol
         && is_valid_last_layer(m_current_tool, m_cur_layer_id, m_z_pos)) {
         m_nozzle_change_result = nozzle_change_new(m_current_tool, new_tool, solid_nozzlechange);
     }
-    // Vortek H2C override: also trigger nozzle_change for carousel rotations within same extruder.
-    // Original Orca code above only checks m_filament_map (extruder-level). For H2C carousel,
-    // filaments on the same extruder but different nozzles also need ramming.
-    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp tool_change_new() L3244
-    // BBS uses is_need_ramming() = !are_filaments_same_nozzle() for nozzle-level gating.
     if (m_nozzle_change_result.gcode.empty()
         && !m_filament_nozzle_map.empty()
         && m_current_tool < m_filament_nozzle_map.size() && new_tool < m_filament_nozzle_map.size()
@@ -3072,11 +3068,7 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
     }
 
     float nz_extrusion_flow = nozzle_change_extrusion_flow(m_layer_height);
-    // Vortek H2C: carousel barrier inside nozzle change zone (emit M632/M633 ONLY for carousel = !extruder_change)
-    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp ramming() L3421-3429
     bool extruder_change = !is_in_same_extruder(old_filament_id, new_filament_id);
-    // Vortek H2C: use carousel-specific ramming speed when available
-    // Matches BBS: ramming() L3435-3436 — max_e_ramming_speed.first (ext change) / .second (carousel)
     float max_e_ramming = extruder_change
         ? m_filpar[m_current_tool].max_e_ramming_speed.first
         : m_filpar[m_current_tool].max_e_ramming_speed.second;
@@ -3098,7 +3090,6 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
 
     if (!extruder_change && m_is_multiple_nozzle) {
         writer.append("M632 S" + std::to_string(new_filament_id) + " M N\n");
-        // BBS L3425-3428: precool departing hotend + fan on inside barrier
         // Use m_physical_extruder_map for heater index (matches format_line_M104 in add_M104_by_requirement)
         if (m_filpar[m_current_tool].precool_target_temp.second != 0) {
             int logical_ext = m_filament_map.empty() ? 0 : m_filament_map[m_current_tool] - 1;
@@ -3136,10 +3127,6 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
     nozzle_change_line_count = solid_infill ? std::numeric_limits<int>::max() : nozzle_change_line_count;
     m_left_to_right = true;
 
-    // Vortek H2C: per_cooling_max_speed — clamp ramming speed by cooldown time
-    // so departing nozzle reaches precool_target_temp before carousel rotation.
-    // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp ramming() L3449-3462
-    // BBS: "nozzle change does not require forcing a cooldown" — only extruder changes need this.
     if (extruder_change) {
         float ramming_length = nozzle_change_line_count * (xr - xl);
         int   extruder_id    = m_filament_map.empty() ? 0 : m_filament_map[m_current_tool] - 1;
@@ -3188,16 +3175,14 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
     block->last_nozzle_change_id = old_filament_id;
 
     NozzleChangeResult result;
-    // Vortek H2C: re-arm carousel barrier + reverse travel (BBS ramming() L3493-3535)
     if (!extruder_change && m_is_multiple_nozzle) {
         writer.append("M632 S" + std::to_string(new_filament_id) + " M N\n");
     }
 
     if (is_need_reverse_travel(m_current_tool, extruder_change)) {
-        // BBS L3499-3526: reverse travel without extrusion back through ramming zone
         bool   left_to_right     = !m_left_to_right;
         int    tpu_line_count    = real_nozzle_change_line_count;
-        float  reverse_speed     = nozzle_change_speed * 2; // BBS L3502
+        float  reverse_speed     = nozzle_change_speed * 2; // reverse travel runs at double the nozzle-change speed
         float  rt_time           = extruder_change ? m_filpar[m_current_tool].ramming_travel_time.first
                                                    : m_filpar[m_current_tool].ramming_travel_time.second;
         float  need_reverse_travel_dis = rt_time * reverse_speed / 60.f;
@@ -3256,7 +3241,6 @@ WipeTower::NozzleChangeResult WipeTower::nozzle_change_new(int old_filament_id, 
     result.origin_start_pos = initial_position;
     result.end_pos   = writer.pos_rotated();
     result.gcode     = writer.gcode();
-    // Matches BBS: result.is_extruder_change = extruder_change (ramming() L3544)
     result.is_extruder_change = extruder_change;
     return result;
 }
@@ -3697,7 +3681,6 @@ void WipeTower::toolchange_wipe_new(WipeTowerWriter &writer, const box_coordinat
         buffer += '\n';
         return buffer;
     };
-    // Matches BBS: toolchange_wipe_new L4039 — add_M104_by_requirement fires for BOTH carousel and extruder changes.
     // m_is_multiple_nozzle gate needed because Orca calls toolchange_wipe_new for ALL printers (BBS has it H2C-only).
     bool should_heating = m_is_multiple_nozzle && m_filpar[m_current_tool].filament_cooling_before_tower > EPSILON &&
                           !solid_tool_toolchange && !is_first_layer();
@@ -3880,8 +3863,6 @@ bool WipeTower::is_in_same_extruder(int filament_id_1, int filament_id_2)
     return m_filament_map[filament_id_1] == m_filament_map[filament_id_2];
 }
 
-// Vortek H2C: format BBS-compatible NOZZLE_CHANGE_START/END tag with OF/NF/ON/NN payload.
-// Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp format_nozzle_change_line() L3388
 std::string WipeTower::format_nozzle_change_tag(bool start, int old_filament_id, int new_filament_id) const
 {
     const std::string &tag = start ? GCodeProcessor::Nozzle_Change_Start_Tag : GCodeProcessor::Nozzle_Change_End_Tag;
@@ -4092,8 +4073,6 @@ void WipeTower::plan_tower_new()
                         nozzle_change_depth = nozzle_change_line_count * m_nozzle_change_perimeter_width;
                     depth += nozzle_change_depth;
                 }
-                // Vortek H2C override: carousel rotation also needs ramming depth
-                // Reference to BBS: BambuStudio/src/libslic3r/GCode/WipeTower.cpp plan_tower_new() uses is_need_ramming()
                 if (nozzle_change_depth == 0
                     && !m_filament_nozzle_map.empty()
                     && toolchange.old_tool < (int)m_filament_nozzle_map.size() && toolchange.new_tool < (int)m_filament_nozzle_map.size()
