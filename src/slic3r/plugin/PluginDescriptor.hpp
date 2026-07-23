@@ -54,7 +54,7 @@ struct PluginDescriptor
     std::string description;                            // Plugin description
     std::string author;                                 // Plugin author from manifest, if available
     std::string version;                                // Selected plugin version
-    std::string latest_version;                         // Latest available cloud version fallback when changelog is unavailable.
+    std::string latest_version;                         // Authoritative latest available cloud version.
     std::string installed_version;                       // Locally installed package version. Preserved across cloud merges, which overwrite `version` with the latest cloud version. Empty when not installed.
     std::vector<std::string> display_types;             // Display-only "compatibility" labels (cloud: raw service labels; local: from real capabilities). Never used for dispatch.
     std::string plugin_root;                            // Installed plugin directory, even when entry_path is invalid or ambiguous.
@@ -117,10 +117,6 @@ struct PluginDescriptor
     bool is_unauthorized() const { return get_update_status() == PluginUpdateStatus::Unauthorized; }
     std::string latest_available_version() const
     {
-        for (const PluginChangelog& entry : changelog) {
-            if (!entry.version.empty())
-                return entry.version;
-        }
         if (!latest_version.empty())
             return latest_version;
         return version;
