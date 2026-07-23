@@ -66,6 +66,10 @@ struct PluginDescriptor
     std::string error;                     // Blocking error message. Non-empty means the plugin is in an error state.
     std::optional<CloudPluginState> cloud; // Extra cloud state layered on top of a normal plugin descriptor.
     bool metadata_valid = false;           // Manifest/package validity stays separate from the user-facing error field.
+    // Whether the discovery pass successfully read .install_state.json. This is transient scan
+    // metadata, used to distinguish an explicit enabled=false from a sidecar that was unavailable
+    // during a live package replacement.
+    bool install_state_valid = false;
     // Package auto-load flag, read from .install_state.json. Defaults to FALSE: a package with no
     // sidecar has never been installed through Orca and carries no auto-load intent, so it must not
     // be loaded at startup. Installing a package writes the sidecar with enabled = true.
