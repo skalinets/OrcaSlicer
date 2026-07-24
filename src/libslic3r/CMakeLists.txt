@@ -19,6 +19,7 @@ if (TARGET OpenVDB::openvdb)
 endif()
 
 option(BUILD_SHARED_LIBS "Build shared libs" OFF)
+option(USE_SLIC3R_CONSOLE_LOG "Enable console logging in RelWithDebInfo builds" OFF)
 
 set(lisbslic3r_sources
     AABBMesh.cpp
@@ -539,7 +540,9 @@ endif ()
 encoding_check(libslic3r)
 
 target_compile_definitions(libslic3r PUBLIC -DUSE_TBB -DTBB_USE_CAPTURED_EXCEPTION=0)
-target_compile_definitions(libslic3r PRIVATE $<$<CONFIG:RelWithDebInfo>:SLIC3R_CONSOLE_LOG>)
+if (USE_SLIC3R_CONSOLE_LOG)
+    target_compile_definitions(libslic3r PRIVATE $<$<CONFIG:RelWithDebInfo>:SLIC3R_CONSOLE_LOG>)
+endif()
 target_include_directories(libslic3r PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(libslic3r SYSTEM PUBLIC ${EXPAT_INCLUDE_DIRS})
 
